@@ -56,25 +56,27 @@ public class FraudDetector {
             try (PreparedStatement ps = conn.prepareStatement(sql);){
                 ps.setLong(1, oneHourAgo);
                 try (ResultSet rs = ps.executeQuery();){
+                    // PRECISION FIX: SUM(amount) over a REAL column yields DECIMAL
+                    // S$ (e.g. 12.75). getLong() silently truncated every player's
+                    // income to whole S$ BEFORE the 5x-average comparison ran, so
+                    // alerts were computed on rounded data. Use doubles end-to-end;
+                    // alert text keeps raw S$ display units (NOT cents).
                     double totalIncome = 0.0;
                     int playerCount = 0;
-                    ArrayList<String[]> results = new ArrayList<String[]>();
+                    ArrayList<PlayerIncome> results = new ArrayList<PlayerIncome>();
                     while (rs.next()) {
                         String uuid = rs.getString("player_uuid");
                         String name = rs.getString("player_name");
-                        long income = rs.getLong("income");
-                        totalIncome += (double)income;
+                        double income = rs.getDouble("income");
+                        totalIncome += income;
                         ++playerCount;
-                        results.add(new String[]{uuid, name, String.valueOf(income)});
+                        results.add(new PlayerIncome(uuid, name, income));
                     }
                     if (playerCount > 0) {
                         double avgIncome = totalIncome / (double)playerCount;
-                        for (String[] result : results) {
-                            long income = Long.parseLong(result[2]);
-                            if (!(avgIncome > 0.0) || !((double)income > avgIncome * 5.0)) continue;
-                            // NOTE: amounts here are read straight from economy.db,
-                            // which stores DECIMAL S$ units (NOT cents) - no /100.
-                            alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.RAPID_WEALTH_GAIN, result[1], result[0], String.format("Player earned %,.0f S$ in 1h (server avg: %,.0f S$, %.1fx above average)", (double)income, avgIncome, (double)income / avgIncome), (double)income > avgIncome * 5.0 * 2.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
+                        for (PlayerIncome result : results) {
+                            if (!(avgIncome > 0.0) || !(result.income > avgIncome * 5.0)) continue;
+                            alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.RAPID_WEALTH_GAIN, result.playerName, result.playerUuid, String.format("Player earned %,.2f S$ in 1h (server avg: %,.2f S$, %.1fx above average)", result.income, avgIncome, result.income / avgIncome), result.income > avgIncome * 5.0 * 2.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
                         }
                     }
                 }
@@ -141,12 +143,14 @@ public class FraudDetector {
             }
             try (PreparedStatement ps = conn.prepareStatement(outlierSql)) {
                 ps.setLong(1, oneHourAgo);
-                ps.setLong(2, (long)(avgAmount * 10.0));
+                ps.setDouble(2, avgAmount * 10.0);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        long amount = rs.getLong("amount");
-                        // NOTE: raw amounts are DECIMAL S$ units (NOT cents) - no /100.
-                        alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.UNUSUAL_SIZE, rs.getString("player_name"), rs.getString("player_uuid"), String.format("Transaction of %,.2f S$ (server avg: %,.2f S$, %.1fx above average) type: %s", amount, avgAmount, (double)amount / avgAmount, rs.getString("type")), (double)amount > avgAmount * 20.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
+                        // PRECISION FIX: ABS(amount) of a REAL column keeps
+                        // fractions (12.75 S$); getLong() read 12. Amounts stay
+                        // in raw S$ display units (NOT cents) in alert text.
+                        double amount = rs.getDouble("amount");
+                        alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.UNUSUAL_SIZE, rs.getString("player_name"), rs.getString("player_uuid"), String.format("Transaction of %,.2f S$ (server avg: %,.2f S$, %.1fx above average) type: %s", amount, avgAmount, amount / avgAmount, rs.getString("type")), amount > avgAmount * 20.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
                     }
                 }
             }
@@ -188,6 +192,20 @@ public class FraudDetector {
         List<FraudAlert> list = this.recentAlerts;
         synchronized (list) {
             return (int)this.recentAlerts.stream().filter(a -> a.severity == FraudAlert.Severity.HIGH).count();
+        }
+    }
+
+    // PRECISION FIX: typed carrier replacing the old String[] + Long.parseLong
+    // round-trip that froze incomes to whole S$ values.
+    private static final class PlayerIncome {
+        final String playerUuid;
+        final String playerName;
+        final double income;
+
+        PlayerIncome(String playerUuid, String playerName, double income) {
+            this.playerUuid = playerUuid;
+            this.playerName = playerName;
+            this.income = income;
         }
     }
 

@@ -79,7 +79,8 @@ public class SnapshotScheduler {
         });
     }
 
-    private SnapshotData computeSnapshot() {
+    // package-private: exercised directly by unit tests
+    SnapshotData computeSnapshot() {
         SnapshotData data = new SnapshotData();
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
         ArrayList<Long> balances = new ArrayList<Long>();
@@ -135,7 +136,14 @@ public class SnapshotScheduler {
                      ResultSet rs = stmt4.executeQuery(sql);){
                     if (rs.next()) {
                         data.auctionActiveListings = rs.getInt("cnt");
-                        data.auctionTotalValue = rs.getLong("total_val");
+                        // UNIT FIX: auction_listings.price is a DECIMAL S$ figure
+                        // (REAL), exactly like the monetary columns in economy.db.
+                        // getLong() rounded 1250.50 S$ down to 1250 and stored it
+                        // AS-IF it were cents, so auctionTotalValue - and every
+                        // consumer reading it (dashboard tiles, weekly report,
+                        // goods-value inflation input) - was ~100x too small and
+                        // lost fractions. Convert explicitly like the other reads.
+                        data.auctionTotalValue = Math.round(rs.getDouble("total_val") * 100.0);
                     }
                 }
             }
@@ -146,7 +154,8 @@ public class SnapshotScheduler {
         return data;
     }
 
-    private static class SnapshotData {
+    // package-private: read directly by unit tests
+    static class SnapshotData {
         long totalWealth;
         int playerCount;
         double giniCoefficient;

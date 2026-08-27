@@ -70,10 +70,10 @@ public class DashboardDataBuilder {
             json.append("\"type\":").append(DashboardDataBuilder.escapeJson(snapshot.snapshotType())).append(",");
             json.append("\"totalWealth\":").append(snapshot.totalWealth()).append(",");
             json.append("\"playerCount\":").append(snapshot.playerCount()).append(",");
-            json.append("\"giniCoefficient\":").append(snapshot.giniCoefficient()).append(",");
+            json.append("\"giniCoefficient\":").append(DashboardDataBuilder.num(snapshot.giniCoefficient())).append(",");
             json.append("\"avgBalance\":").append(snapshot.avgBalance()).append(",");
             json.append("\"medianBalance\":").append(snapshot.medianBalance()).append(",");
-            json.append("\"top1PercentShare\":").append(snapshot.top1PercentShare()).append(",");
+            json.append("\"top1PercentShare\":").append(DashboardDataBuilder.num(snapshot.top1PercentShare())).append(",");
             json.append("\"moneySupply\":").append(snapshot.moneySupply()).append(",");
             json.append("\"auctionActiveListings\":").append(snapshot.auctionActiveListings()).append(",");
             json.append("\"auctionTotalValue\":").append(snapshot.auctionTotalValue());
@@ -96,11 +96,11 @@ public class DashboardDataBuilder {
             json.append("{");
             json.append("\"moneySupplyCents\":").append(report.moneySupplyCents).append(",");
             json.append("\"goodsValueCents\":").append(report.goodsValueCents).append(",");
-            json.append("\"moneyToGoodsRatio\":").append(report.moneyToGoodsRatio).append(",");
+            json.append("\"moneyToGoodsRatio\":").append(DashboardDataBuilder.num(report.moneyToGoodsRatio)).append(",");
             json.append("\"status\":").append(DashboardDataBuilder.escapeJson(report.status)).append(",");
-            json.append("\"inflationRate24h\":").append(report.inflationRate24h != null ? report.inflationRate24h : "null").append(",");
-            json.append("\"inflationRate7d\":").append(report.inflationRate7d != null ? report.inflationRate7d : "null").append(",");
-            json.append("\"inflationRate30d\":").append(report.inflationRate30d != null ? report.inflationRate30d : "null");
+            json.append("\"inflationRate24h\":").append(DashboardDataBuilder.num(report.inflationRate24h)).append(",");
+            json.append("\"inflationRate7d\":").append(DashboardDataBuilder.num(report.inflationRate7d)).append(",");
+            json.append("\"inflationRate30d\":").append(DashboardDataBuilder.num(report.inflationRate30d));
             json.append("}");
         }
     }
@@ -113,14 +113,14 @@ public class DashboardDataBuilder {
             try {
                 EconomyHealthScore.HealthReport report = engine.getHealthScore().compute();
                 json.append("{");
-                json.append("\"overallScore\":").append(report.overallScore).append(",");
+                json.append("\"overallScore\":").append(DashboardDataBuilder.num(report.overallScore)).append(",");
                 json.append("\"grade\":").append(DashboardDataBuilder.escapeJson(report.getGrade())).append(",");
                 json.append("\"summary\":").append(DashboardDataBuilder.escapeJson(report.summary)).append(",");
-                json.append("\"giniScore\":").append(report.giniScore).append(",");
-                json.append("\"inflationScore\":").append(report.inflationScore).append(",");
-                json.append("\"moneyGrowthScore\":").append(report.moneyGrowthScore).append(",");
-                json.append("\"activityScore\":").append(report.activityScore).append(",");
-                json.append("\"liquidityScore\":").append(report.liquidityScore);
+                json.append("\"giniScore\":").append(DashboardDataBuilder.num(report.giniScore)).append(",");
+                json.append("\"inflationScore\":").append(DashboardDataBuilder.num(report.inflationScore)).append(",");
+                json.append("\"moneyGrowthScore\":").append(DashboardDataBuilder.num(report.moneyGrowthScore)).append(",");
+                json.append("\"activityScore\":").append(DashboardDataBuilder.num(report.activityScore)).append(",");
+                json.append("\"liquidityScore\":").append(DashboardDataBuilder.num(report.liquidityScore));
                 json.append("}");
             }
             catch (Exception e) {
@@ -166,7 +166,7 @@ public class DashboardDataBuilder {
             json.append("\"transactionCount\":").append(day.transactionCount()).append(",");
             json.append("\"transactionVolume\":").append(day.transactionVolume()).append(",");
             json.append("\"activePlayers\":").append(day.activePlayers()).append(",");
-            json.append("\"inflationRate\":").append(day.inflationRate() != null ? day.inflationRate() : "null");
+            json.append("\"inflationRate\":").append(DashboardDataBuilder.num(day.inflationRate()));
             json.append("}");
         }
         json.append("]");
@@ -207,6 +207,21 @@ public class DashboardDataBuilder {
         catch (Exception e) {
             return "Unknown Server";
         }
+    }
+
+    // JSON SAFETY: doubles computed from statistics can become NaN or
+    // +/-Infinity on corrupt or foreign data. Appending them literally emits
+    // "NaN"/"Infinity" tokens that are INVALID JSON and break the entire
+    // dashboard payload (JSON.parse throws client-side). Map them to null.
+    private static String num(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return "null";
+        }
+        return Double.toString(value);
+    }
+
+    private static String num(Double value) {
+        return value == null ? "null" : DashboardDataBuilder.num(value.doubleValue());
     }
 
     static String escapeJson(String value) {

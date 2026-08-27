@@ -29,6 +29,12 @@ public class LiveMetricsTracker {
     // rows forever. transaction_log.id is INTEGER PRIMARY KEY AUTOINCREMENT,
     // making id-based incremental polling exact.
     private final AtomicLong lastPolledId = new AtomicLong(0L);
+    // EMPTY-LOG FIX: distinguishes "cursor not seeded yet" from "cursor is
+    // legitimately 0 because the transaction log was EMPTY when seeded".
+    // The old code treated a 0 cursor as "nothing to poll" and returned early
+    // on every cycle, so a server started against an empty transaction_log
+    // permanently stopped recording metrics until the mod was restarted.
+    private volatile boolean cursorInitialized = false;
     private volatile String currentDate = LocalDate.now(ZoneOffset.UTC).toString();
     private final AtomicLong dailyVolumeCents = new AtomicLong(0L);
     private final AtomicLong dailyTransactionCount = new AtomicLong(0L);
@@ -50,7 +56,7 @@ public class LiveMetricsTracker {
             return;
         }
         this.running = true;
-        this.initializeLastTimestamp();
+        this.tryInitializeCursor();
         this.analyticsDb.getExecutor().submit(this::pollingLoop);
         SolidusAnalyticsMod.LOGGER.info("LiveMetricsTracker started. Polling interval: {}ms", (Object)this.pollIntervalMs);
     }
@@ -121,11 +127,15 @@ public class LiveMetricsTracker {
         }
     }
 
-    private void pollNewTransactions() {
-        long since = this.lastPolledId.get();
-        if (since == 0L) {
-            return; // initializeLastTimestamp seeds MAX(id); 0 means an empty log
+    // package-private: exercised directly by unit tests
+    void pollNewTransactions() {
+        // Cursor seeding retries on every cycle until the economy db is
+        // readable; once seeded, a 0 cursor is a VALID position meaning
+        // "log was empty at seed time" - every future row (id >= 1) is new.
+        if (!this.cursorInitialized && !this.tryInitializeCursor()) {
+            return; // economy db not readable yet (schema missing) - retry next cycle
         }
+        long since = this.lastPolledId.get();
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
         String sql = "    SELECT id, type, player_uuid, player_name, amount, item_material, item_quantity\n    FROM transaction_log\n    WHERE id > ?\n    ORDER BY id ASC\n";
         try (Connection conn = DriverManager.getConnection(dbUrl);
@@ -149,7 +159,17 @@ public class LiveMetricsTracker {
                     long amountCents = Math.round(rs.getDouble("amount") * 100.0);
                     String itemMaterial = rs.getString("item_material");
                     int itemQuantity = rs.getInt("item_quantity");
-                    this.dailyVolumeCents.addAndGet(Math.abs(amountCents));
+                    // VOLUME FIX: core logs one row per PARTICIPANT of a single
+                    // money movement (/pay -> PAY_SEND + PAY_RECEIVE; auction
+                    // sale -> AUCTION_BOUGHT + AUCTION_SOLD), each carrying the
+                    // same amount. Summing abs(amount) over every record counted
+                    // every transfer and every auction sale twice. Receiver-side
+                    // mirror records are excluded from VOLUME only - they still
+                    // count toward transaction count, per-type stats, top items
+                    // and player activity.
+                    if (!"PAY_RECEIVE".equals(type) && !"AUCTION_SOLD".equals(type)) {
+                        this.dailyVolumeCents.addAndGet(Math.abs(amountCents));
+                    }
                     this.dailyTransactionCount.incrementAndGet();
                     this.transactionsByType.computeIfAbsent(type, k -> new AtomicLong(0L)).incrementAndGet();
                     if (itemMaterial != null && itemQuantity > 0) {
@@ -218,7 +238,12 @@ public class LiveMetricsTracker {
         return (double)(latest.totalWealth() - previous.totalWealth()) / (double)previous.totalWealth() * 100.0;
     }
 
-    private void initializeLastTimestamp() {
+    // Seeds the polling cursor from MAX(id). Returns false ONLY when the
+    // economy database cannot be read yet (e.g. schema not created, Core not
+    // initialized) so the polling loop retries instead of silently leaving
+    // metrics dead forever. A successful seed with an empty log leaves the
+    // cursor at 0, which pollNewTransactions now treats as a valid position.
+    private boolean tryInitializeCursor() {
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
         String sql = "SELECT MAX(id) as max_id FROM transaction_log";
         try (Connection conn = DriverManager.getConnection(dbUrl);){
@@ -234,15 +259,17 @@ public class LiveMetricsTracker {
                         SolidusAnalyticsMod.LOGGER.info("Last known transaction row id: {}", (Object)maxId);
                     } else {
                         this.lastPolledId.set(0L);
-                        SolidusAnalyticsMod.LOGGER.info("No transactions found. Starting fresh.");
+                        SolidusAnalyticsMod.LOGGER.info("Transaction log empty. Cursor starts at 0; new transactions will be picked up.");
                     }
                 }
             }
         }
         catch (SQLException e) {
-            SolidusAnalyticsMod.LOGGER.error("Failed to initialize last polled id", (Throwable)e);
-            this.lastPolledId.set(0L);
+            SolidusAnalyticsMod.LOGGER.warn("Economy db not ready for cursor seed; will retry on next poll", (Throwable)e);
+            return false;
         }
+        this.cursorInitialized = true;
+        return true;
     }
 
     private Map<String, Long> getTopEntries(ConcurrentHashMap<String, AtomicLong> map, int limit) {
