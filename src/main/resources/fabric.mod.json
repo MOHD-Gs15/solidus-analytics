@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "solidus-analytics",
+  "version": "${version}",
+  "name": "Solidus Analytics",
+  "description": "Server-side economy analytics and health dashboard for Solidus.",
+  "authors": ["MOHD_Gs"],
+  "contact": {
+    "sources": "https://github.com/MOHD-Gs15/solidus-analytics"
+  },
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "com.solidus.analytics.SolidusAnalyticsMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.4",
+    "minecraft": "~26.1.2",
+    "java": ">=25",
+    "fabric-api": ">=0.155.2+26.1.2"
+  },
+  "suggests": {
+    "solidus": "*"
+  }
+}

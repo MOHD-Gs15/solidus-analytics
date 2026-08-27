@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Solidus Analytics</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">SOLIDUS / SERVER ANALYTICS</p>
+        <h1>Economy intelligence</h1>
+        <p class="lede">A live operational view of wealth, supply, inflation, commerce, and risk.</p>
+      </div>
+      <div id="status" class="status">Loading…</div>
+    </header>
+
+    <section class="cards" aria-label="Key metrics">
+      <article class="card"><span>Total wealth</span><strong id="total-wealth">—</strong></article>
+      <article class="card"><span>Money supply</span><strong id="money-supply">—</strong></article>
+      <article class="card"><span>Players</span><strong id="players">—</strong></article>
+      <article class="card"><span>Health score</span><strong id="health-score">—</strong></article>
+    </section>
+
+    <section class="grid">
+      <article class="panel wide">
+        <div class="panel-heading"><h2>Economy snapshot</h2><span id="snapshot-time">No snapshot</span></div>
+        <div class="snapshot"><div><span>Gini coefficient</span><strong id="gini">—</strong></div><div><span>Inflation</span><strong id="inflation">—</strong></div><div><span>Active auctions</span><strong id="auctions">—</strong></div><div><span>Auction value</span><strong id="auction-value">—</strong></div></div>
+      </article>
+      <article class="panel"><div class="panel-heading"><h2>Risk signals</h2></div><div id="fraud-alerts" class="list muted">No alerts</div></article>
+      <article class="panel"><div class="panel-heading"><h2>Top items</h2></div><div id="top-items" class="list muted">No item data</div></article>
+      <article class="panel wide"><div class="panel-heading"><h2>Recent history</h2></div><div id="history" class="history muted">No history</div></article>
+    </section>
+
+    <footer>Solidus Analytics · Data is served by the local server configuration.</footer>
+  </main>
+  <script src="/js/app.js" defer></script>
+</body>
+</html>
