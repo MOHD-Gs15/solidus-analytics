@@ -76,26 +76,28 @@ public class AnalyticsDatabase {
     }
 
     public void shutdown() {
-        if (this.initialized) {
-            this.asyncExecutor.shutdown();
-            try {
-                if (!this.asyncExecutor.awaitTermination(30L, TimeUnit.SECONDS)) {
-                    this.asyncExecutor.shutdownNow();
-                    SolidusAnalyticsMod.LOGGER.warn("Analytics executor forced shutdown after timeout.");
-                }
-            }
-            catch (InterruptedException e) {
+        // ROBUSTNESS FIX: always stop the worker executor, even when initialize()
+        // failed midway - otherwise its daemon thread lingers forever holding the
+        // half-open connection state. Ordering preserved: drain queue BEFORE the
+        // connection is closed.
+        this.asyncExecutor.shutdown();
+        try {
+            if (!this.asyncExecutor.awaitTermination(30L, TimeUnit.SECONDS)) {
                 this.asyncExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
+                SolidusAnalyticsMod.LOGGER.warn("Analytics executor forced shutdown after timeout.");
             }
-            if (this.persistentConnection != null) {
-                try {
-                    this.persistentConnection.close();
-                    SolidusAnalyticsMod.LOGGER.info("Analytics database connection closed.");
-                }
-                catch (SQLException e) {
-                    SolidusAnalyticsMod.LOGGER.error("Failed to close analytics database connection", (Throwable)e);
-                }
+        }
+        catch (InterruptedException e) {
+            this.asyncExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        if (this.persistentConnection != null) {
+            try {
+                this.persistentConnection.close();
+                SolidusAnalyticsMod.LOGGER.info("Analytics database connection closed.");
+            }
+            catch (SQLException e) {
+                SolidusAnalyticsMod.LOGGER.error("Failed to close analytics database connection", (Throwable)e);
             }
         }
         this.initialized = false;

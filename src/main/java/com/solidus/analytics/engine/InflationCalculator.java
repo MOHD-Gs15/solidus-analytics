@@ -71,8 +71,9 @@ public class InflationCalculator {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 if (!rs.next()) return 0L;
-                long l = rs.getLong("total_wealth");
-                return l;
+                // UNIT FIX: balances are DECIMAL S$ units in economy.db, not cents.
+                long totalCents = Math.round(rs.getDouble("total_wealth") * 100.0);
+                return totalCents;
             }
         }
         catch (SQLException e) {
@@ -105,7 +106,8 @@ public class InflationCalculator {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 if (!rs.next()) return 0L;
-                return rs.getLong("total_value");
+                // UNIT FIX: auction prices are DECIMAL S$ units, not cents.
+                return Math.round(rs.getDouble("total_value") * 100.0);
             }
         }
         catch (SQLException e) {
@@ -131,8 +133,9 @@ public class InflationCalculator {
                 ps.setLong(1, twentyFourHoursAgo);
                 try (ResultSet rs = ps.executeQuery();){
                     if (!rs.next()) return 0L;
-                    long l = rs.getLong("shop_volume");
-                    return l;
+                    // UNIT FIX: transaction amounts are DECIMAL S$ units, not cents.
+                    long shopVolumeCents = Math.round(rs.getDouble("shop_volume") * 100.0);
+                    return shopVolumeCents;
                 }
             }
         }

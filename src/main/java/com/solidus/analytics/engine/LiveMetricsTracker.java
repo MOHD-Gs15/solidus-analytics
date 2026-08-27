@@ -22,7 +22,13 @@ import java.util.concurrent.atomic.AtomicLong;
 public class LiveMetricsTracker {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30000L;
     private volatile long pollIntervalMs = 30000L;
-    private final AtomicLong lastPolledTimestamp = new AtomicLong(0L);
+    // SECURITY/CORRECTNESS FIX: cursor moved from timestamp to autoincrement id.
+    // The old "WHERE timestamp > ?" cursor permanently skipped every transaction
+    // written in the same millisecond as the cursor advanced while a poll was
+    // running - bursts within one ms are common, so daily metrics silently lost
+    // rows forever. transaction_log.id is INTEGER PRIMARY KEY AUTOINCREMENT,
+    // making id-based incremental polling exact.
+    private final AtomicLong lastPolledId = new AtomicLong(0L);
     private volatile String currentDate = LocalDate.now(ZoneOffset.UTC).toString();
     private final AtomicLong dailyVolumeCents = new AtomicLong(0L);
     private final AtomicLong dailyTransactionCount = new AtomicLong(0L);
@@ -116,27 +122,31 @@ public class LiveMetricsTracker {
     }
 
     private void pollNewTransactions() {
-        long since = this.lastPolledTimestamp.get();
+        long since = this.lastPolledId.get();
         if (since == 0L) {
-            this.lastPolledTimestamp.set(System.currentTimeMillis());
-            return;
+            return; // initializeLastTimestamp seeds MAX(id); 0 means an empty log
         }
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        String sql = "    SELECT timestamp, type, player_uuid, player_name, amount, item_material, item_quantity\n    FROM transaction_log\n    WHERE timestamp > ?\n    ORDER BY timestamp ASC\n";
+        String sql = "    SELECT id, type, player_uuid, player_name, amount, item_material, item_quantity\n    FROM transaction_log\n    WHERE id > ?\n    ORDER BY id ASC\n";
         try (Connection conn = DriverManager.getConnection(dbUrl);
              PreparedStatement ps = conn.prepareStatement(sql);){
             try (Statement stmt = conn.createStatement();){
                 stmt.execute("PRAGMA query_only = ON");
             }
             ps.setLong(1, since);
-            long maxTimestamp = since;
+            long maxId = since;
             int processed = 0;
             try (ResultSet rs = ps.executeQuery();){
                 while (rs.next()) {
-                    long timestamp = rs.getLong("timestamp");
+                    long rowId = rs.getLong("id");
                     String type = rs.getString("type");
                     String playerUuid = rs.getString("player_uuid");
-                    long amountCents = rs.getLong("amount");
+                    // UNIT FIX: Solidus Core stores monetary amounts as DECIMAL S$
+                    // units (REAL, e.g. 500.0 = 500 S$), NOT cents. This module's
+                    // contract treats every internal figure as cents and divides by
+                    // 100 at display time; without this explicit conversion ALL
+                    // money metrics were reported 100x too small.
+                    long amountCents = Math.round(rs.getDouble("amount") * 100.0);
                     String itemMaterial = rs.getString("item_material");
                     int itemQuantity = rs.getInt("item_quantity");
                     this.dailyVolumeCents.addAndGet(Math.abs(amountCents));
@@ -152,12 +162,12 @@ public class LiveMetricsTracker {
                     if (playerUuid != null) {
                         this.activePlayers.put(playerUuid, Boolean.TRUE);
                     }
-                    maxTimestamp = Math.max(maxTimestamp, timestamp);
+                    maxId = Math.max(maxId, rowId);
                     ++processed;
                 }
             }
             if (processed > 0) {
-                this.lastPolledTimestamp.set(maxTimestamp);
+                this.lastPolledId.set(maxId);
                 SolidusAnalyticsMod.LOGGER.debug("Processed {} new transactions. Daily total: {} tx, S${}", new Object[]{processed, this.dailyTransactionCount.get(), String.format("%,.2f", (double)this.dailyVolumeCents.get() / 100.0)});
             }
         }
@@ -210,7 +220,7 @@ public class LiveMetricsTracker {
 
     private void initializeLastTimestamp() {
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        String sql = "SELECT MAX(timestamp) as max_ts FROM transaction_log";
+        String sql = "SELECT MAX(id) as max_id FROM transaction_log";
         try (Connection conn = DriverManager.getConnection(dbUrl);){
             try (Statement pragmaStmt = conn.createStatement();){
                 pragmaStmt.execute("PRAGMA query_only = ON");
@@ -218,20 +228,20 @@ public class LiveMetricsTracker {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql);){
                 if (rs.next()) {
-                    long maxTs = rs.getLong("max_ts");
+                    long maxId = rs.getLong("max_id");
                     if (!rs.wasNull()) {
-                        this.lastPolledTimestamp.set(maxTs);
-                        SolidusAnalyticsMod.LOGGER.info("Last known transaction timestamp: {}", (Object)maxTs);
+                        this.lastPolledId.set(maxId);
+                        SolidusAnalyticsMod.LOGGER.info("Last known transaction row id: {}", (Object)maxId);
                     } else {
-                        this.lastPolledTimestamp.set(System.currentTimeMillis());
-                        SolidusAnalyticsMod.LOGGER.info("No transactions found. Starting from current time.");
+                        this.lastPolledId.set(0L);
+                        SolidusAnalyticsMod.LOGGER.info("No transactions found. Starting fresh.");
                     }
                 }
             }
         }
         catch (SQLException e) {
-            SolidusAnalyticsMod.LOGGER.error("Failed to initialize last polled timestamp", (Throwable)e);
-            this.lastPolledTimestamp.set(System.currentTimeMillis());
+            SolidusAnalyticsMod.LOGGER.error("Failed to initialize last polled id", (Throwable)e);
+            this.lastPolledId.set(0L);
         }
     }
 

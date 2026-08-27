@@ -72,7 +72,9 @@ public class FraudDetector {
                         for (String[] result : results) {
                             long income = Long.parseLong(result[2]);
                             if (!(avgIncome > 0.0) || !((double)income > avgIncome * 5.0)) continue;
-                            alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.RAPID_WEALTH_GAIN, result[1], result[0], String.format("Player earned %,.0f S$ in 1h (server avg: %,.0f S$, %.1fx above average)", (double)income / 100.0, avgIncome / 100.0, (double)income / avgIncome), (double)income > avgIncome * 5.0 * 2.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
+                            // NOTE: amounts here are read straight from economy.db,
+                            // which stores DECIMAL S$ units (NOT cents) - no /100.
+                            alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.RAPID_WEALTH_GAIN, result[1], result[0], String.format("Player earned %,.0f S$ in 1h (server avg: %,.0f S$, %.1fx above average)", (double)income, avgIncome, (double)income / avgIncome), (double)income > avgIncome * 5.0 * 2.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
                         }
                     }
                 }
@@ -143,7 +145,8 @@ public class FraudDetector {
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         long amount = rs.getLong("amount");
-                        alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.UNUSUAL_SIZE, rs.getString("player_name"), rs.getString("player_uuid"), String.format("Transaction of %,.2f S$ (server avg: %,.2f S$, %.1fx above average) type: %s", (double)amount / 100.0, avgAmount / 100.0, (double)amount / avgAmount, rs.getString("type")), (double)amount > avgAmount * 20.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
+                        // NOTE: raw amounts are DECIMAL S$ units (NOT cents) - no /100.
+                        alerts.add(new FraudAlert(Instant.now().toEpochMilli(), FraudAlert.Type.UNUSUAL_SIZE, rs.getString("player_name"), rs.getString("player_uuid"), String.format("Transaction of %,.2f S$ (server avg: %,.2f S$, %.1fx above average) type: %s", amount, avgAmount, (double)amount / avgAmount, rs.getString("type")), (double)amount > avgAmount * 20.0 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.MEDIUM));
                     }
                 }
             }

@@ -69,7 +69,11 @@ extends NanoHTTPD {
             return AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, "text/plain", "Method Not Allowed");
         }
         if (!this.isAuthenticated(session)) {
-            return AnalyticsWebServer.newFixedLengthResponse((NanoHTTPD.Response.IStatus)NanoHTTPD.Response.Status.UNAUTHORIZED, (String)"text/html", (String)"<html><body><h1>401 Unauthorized</h1><p>Valid credentials required. Set up a password with /analytics dashboard setup &lt;password&gt;</p></body></html>");
+            NanoHTTPD.Response unauthorized = AnalyticsWebServer.newFixedLengthResponse((NanoHTTPD.Response.IStatus)NanoHTTPD.Response.Status.UNAUTHORIZED, (String)"text/html", (String)"<html><body><h1>401 Unauthorized</h1><p>Valid credentials required.</p></body></html>");
+            // SEC FIX: never reveal the setup command to unauthenticated callers.
+            // Standard Basic-auth clients need this header to prompt for credentials.
+            unauthorized.addHeader("WWW-Authenticate", "Basic realm=\"Solidus Analytics\"");
+            return unauthorized;
         }
         NanoHTTPD.Response response = this.routeRequest(uri, session);
         response.addHeader("Cache-Control", "no-store");

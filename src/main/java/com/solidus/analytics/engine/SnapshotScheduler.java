@@ -91,7 +91,9 @@ public class SnapshotScheduler {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 while (rs.next()) {
-                    balances.add(rs.getLong("balance"));
+                    // UNIT FIX: economy.db stores DECIMAL S$ units (REAL), not cents.
+                    // Convert to cents so every downstream /100 display is correct.
+                    balances.add(Math.round(rs.getDouble("balance") * 100.0));
                 }
             }
         }

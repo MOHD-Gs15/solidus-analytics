@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,12 +42,15 @@ public class WeeklyReportGenerator {
 
     public void checkAndGenerate() {
         LocalDate now = LocalDate.now(ZoneOffset.UTC);
-        int currentWeek = now.get(WeekFields.ISO.weekOfWeekBasedYear());
-        int currentYear = now.getYear();
+        // FIX: week identity must use the ISO WEEK-BASED year, not the calendar
+        // year. Around New Year the calendar year and the ISO week-year diverge,
+        // which produced colliding week keys and skipped/duplicated reports.
+        int currentWeek = now.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+        int weekBasedYear = now.get(IsoFields.WEEK_BASED_YEAR);
         if (now.getDayOfWeek().getValue() != 1) {
             return;
         }
-        int weekKey = currentYear * 100 + currentWeek;
+        int weekKey = weekBasedYear * 100 + currentWeek;
         if (weekKey == this.lastReportWeek) {
             return;
         }
