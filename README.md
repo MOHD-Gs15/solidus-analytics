@@ -105,6 +105,7 @@ An embedded HTTP server (NanoHTTPD) serving a single-page dashboard and a JSON A
 * HTTP Basic authentication against a PBKDF2-SHA-256 password hash (210,000 iterations)
 * Hardened response headers (`X-Frame-Options`, `nosniff`, `no-store`, `no-referrer`)
 * Auto-refreshing browser view every 30 seconds
+* **Daily trade volume chart** — dependency-free SVG line chart of the last 30 days from `dailyHistory`, with grid lines, compact axis labels (1.2k / 1.2M), and native hover tooltips per day
 * Disabled by default — and refuses to start without a configured password hash
 
 ### Premium Features

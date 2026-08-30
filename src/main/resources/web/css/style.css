@@ -26,6 +26,16 @@ h2 { font-size:17px; }
 .list-row:last-child,.history-row:last-child { border-bottom:0; }
 .muted { color:var(--muted); }
 .bad { color:var(--bad); } .warn { color:var(--warn); } .good { color:var(--good); }
+/* Daily trade volume SVG chart (dependency-free) */
+.chart { min-height:180px; }
+.chart-svg { width:100%; height:auto; display:block; }
+.chart-grid { stroke:rgba(145,160,194,.18); stroke-width:1; }
+.chart-text { fill:var(--muted); font-size:11px; font-family:inherit; }
+.chart-area { fill:rgba(121,168,255,.14); stroke:none; }
+.chart-line { fill:none; stroke:var(--accent); stroke-width:2.5; stroke-linejoin:round; stroke-linecap:round; }
+.chart-dot { fill:var(--accent); }
+.chart-hit { fill:transparent; }
+.chart-hit:hover { fill:rgba(121,168,255,.25); }
 footer { color:var(--muted); font-size:12px; padding:24px 2px 0; }
 @media (max-width: 760px) { .hero { align-items:flex-start; flex-direction:column; } .cards { grid-template-columns:repeat(2,1fr); } .grid { grid-template-columns:1fr; } .wide { grid-column:auto; } .snapshot { grid-template-columns:repeat(2,1fr); } }
 @media (max-width: 420px) { .shell { width:min(100% - 22px,1180px); padding-top:24px; } .cards { grid-template-columns:1fr; } }

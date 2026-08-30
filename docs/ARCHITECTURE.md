@@ -304,8 +304,11 @@ resources/
 ├── fabric.mod.json                — environment: "server", suggests: solidus
 └── web/
     ├── index.html                 — Single-page dashboard shell
-    ├── css/style.css              — Dark-theme styling
-    └── js/app.js                  — 30s auto-refresh against /api/data
+    ├── css/style.css              — Dark-theme styling + SVG chart classes
+    └── js/app.js                  — 30s auto-refresh against /api/data;
+                                      renders a dependency-free SVG line
+                                      chart of dailyHistory volume (oldest
+                                      → newest, grid, hover tooltips)
 ```
 
 ---
