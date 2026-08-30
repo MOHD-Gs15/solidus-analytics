@@ -1,24 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- *
- * Could not load the following classes:
- *  com.mojang.brigadier.CommandDispatcher
- *  com.mojang.brigadier.arguments.ArgumentType
- *  com.mojang.brigadier.arguments.StringArgumentType
- *  com.mojang.brigadier.builder.LiteralArgumentBuilder
- *  com.mojang.brigadier.context.CommandContext
- *  com.mojang.brigadier.exceptions.CommandSyntaxException
- *  net.minecraft.ChatFormatting
- *  net.minecraft.commands.CommandSourceStack
- *  net.minecraft.commands.Commands
- *  net.minecraft.commands.arguments.MessageArgument
- *  net.minecraft.network.chat.Component
- *  net.minecraft.network.chat.MutableComponent
- *  net.minecraft.server.level.ServerPlayer
- *  net.minecraft.server.permissions.Permission
- *  net.minecraft.server.permissions.Permission$HasCommandLevel
- *  net.minecraft.server.permissions.PermissionLevel
- */
 package com.solidus.analytics.commands;
 
 import com.mojang.brigadier.CommandDispatcher;

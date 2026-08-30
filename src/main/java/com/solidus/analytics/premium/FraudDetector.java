@@ -1,6 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- */
 package com.solidus.analytics.premium;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
@@ -114,11 +111,6 @@ public class FraudDetector {
         return alerts;
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     private List<FraudAlert> checkUnusualTransactionSize() {
         ArrayList<FraudAlert> alerts = new ArrayList<FraudAlert>();
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
@@ -161,9 +153,6 @@ public class FraudDetector {
         return alerts;
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     private void addAlert(FraudAlert alert) {
         List<FraudAlert> list = this.recentAlerts;
         synchronized (list) {
@@ -174,9 +163,6 @@ public class FraudDetector {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public List<FraudAlert> getRecentAlerts(int limit) {
         List<FraudAlert> list = this.recentAlerts;
         synchronized (list) {
@@ -185,9 +171,6 @@ public class FraudDetector {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public int getHighSeverityCount() {
         List<FraudAlert> list = this.recentAlerts;
         synchronized (list) {

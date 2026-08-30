@@ -1,6 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- */
 package com.solidus.analytics.engine;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
@@ -56,11 +53,6 @@ public class InflationCalculator {
         return CompletableFuture.supplyAsync(this::calculate, this.analyticsDb.getExecutor());
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     private long getMoneySupply() {
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
         String sql = "SELECT COALESCE(SUM(balance), 0) as total_wealth, COUNT(*) as player_count FROM player_balances";
@@ -88,11 +80,6 @@ public class InflationCalculator {
         return auctionValue + shopThroughput;
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     private long getActiveAuctionValue() {
         if (this.auctionsDbPath == null) {
             return 0L;
@@ -116,11 +103,6 @@ public class InflationCalculator {
         return 0L;
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     private long estimateShopThroughput() {
         String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
         long twentyFourHoursAgo = System.currentTimeMillis() - 86400000L;

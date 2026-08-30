@@ -1,17 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- *
- * Could not load the following classes:
- *  com.mojang.brigadier.CommandDispatcher
- *  net.fabricmc.api.DedicatedServerModInitializer
- *  net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
- *  net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
- *  net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
- *  net.fabricmc.loader.api.FabricLoader
- *  net.minecraft.commands.CommandSourceStack
- *  org.slf4j.Logger
- *  org.slf4j.LoggerFactory
- */
 package com.solidus.analytics;
 
 import com.mojang.brigadier.CommandDispatcher;

@@ -1,6 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- */
 package com.solidus.analytics.premium;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
@@ -118,9 +115,6 @@ public class WeeklyReportGenerator {
         }
     }
 
-    /*
-     * WARNING - void declaration
-     */
     private String buildReport() {
         StringBuilder sb = new StringBuilder();
         String separator = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550";

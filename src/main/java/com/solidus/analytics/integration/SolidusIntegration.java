@@ -1,9 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- *
- * Could not load the following classes:
- *  net.fabricmc.loader.api.FabricLoader
- */
 package com.solidus.analytics.integration;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
@@ -138,11 +132,6 @@ public final class SolidusIntegration {
         this.economyDbPath = economyDbPath;
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     private int getPlayerCountFromDB() {
         if (this.economyDbPath == null) {
             return -1;

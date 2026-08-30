@@ -1,6 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- */
 package com.solidus.analytics;
 
 import com.solidus.analytics.SolidusAnalyticsMod;

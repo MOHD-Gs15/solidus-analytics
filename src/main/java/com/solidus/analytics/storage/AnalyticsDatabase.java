@@ -1,6 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- */
 package com.solidus.analytics.storage;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
@@ -104,9 +101,6 @@ public class AnalyticsDatabase {
         SolidusAnalyticsMod.LOGGER.info("Analytics database shut down complete.");
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public void insertSnapshot(Snapshot snapshot) {
         this.ensureInitialized();
         String sql = "    INSERT INTO analytics_snapshots\n    (timestamp, snapshot_type, total_wealth, player_count, gini_coefficient,\n     avg_balance, median_balance, top1_percent_share, money_supply,\n     auction_active_listings, auction_total_value)\n    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n";
@@ -137,12 +131,6 @@ public class AnalyticsDatabase {
         this.asyncExecutor.submit(() -> this.insertSnapshot(snapshot));
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     public Snapshot getLatestSnapshot() {
         this.ensureInitialized();
         String sql = "SELECT * FROM analytics_snapshots ORDER BY timestamp DESC LIMIT 1";
@@ -161,12 +149,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     public Snapshot getSnapshotBefore(long timestamp) {
         this.ensureInitialized();
         String sql = "SELECT * FROM analytics_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1";
@@ -186,9 +168,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public List<Snapshot> getSnapshots(String snapshotType, int limit) {
         this.ensureInitialized();
         ArrayList<Snapshot> snapshots = new ArrayList<Snapshot>();
@@ -227,9 +206,6 @@ public class AnalyticsDatabase {
         return snapshots;
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public void upsertDailyMetrics(DailyMetrics metrics) {
         this.ensureInitialized();
         String sql = "    INSERT OR REPLACE INTO analytics_daily_metrics\n    (date, transaction_count, transaction_volume, shop_buy_count, shop_sell_count,\n     auction_count, pay_transfer_count, new_players, active_players,\n     inflation_rate, top_item_bought, top_item_sold)\n    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n";
@@ -265,12 +241,6 @@ public class AnalyticsDatabase {
         this.asyncExecutor.submit(() -> this.upsertDailyMetrics(metrics));
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     public DailyMetrics getDailyMetrics(String date) {
         this.ensureInitialized();
         String sql = "SELECT * FROM analytics_daily_metrics WHERE date = ?";
@@ -290,9 +260,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public List<DailyMetrics> getRecentDailyMetrics(int limit) {
         this.ensureInitialized();
         ArrayList<DailyMetrics> metrics = new ArrayList<DailyMetrics>();
@@ -314,9 +281,6 @@ public class AnalyticsDatabase {
         return metrics;
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public void upsertItemMetrics(ItemMetrics metrics) {
         this.ensureInitialized();
         String sql = "    INSERT OR REPLACE INTO analytics_item_metrics\n    (date, material, buy_count, sell_count, total_quantity, total_value)\n    VALUES (?, ?, ?, ?, ?, ?)\n";
@@ -342,9 +306,6 @@ public class AnalyticsDatabase {
         this.asyncExecutor.submit(() -> this.upsertItemMetrics(metrics));
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public List<ItemMetrics> getItemMetrics(String date) {
         this.ensureInitialized();
         ArrayList<ItemMetrics> metrics = new ArrayList<ItemMetrics>();
@@ -366,9 +327,6 @@ public class AnalyticsDatabase {
         return metrics;
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public int cleanupOldSnapshots(int retentionDays) {
         this.ensureInitialized();
         long cutoffTimestamp = System.currentTimeMillis() - (long)retentionDays * 86400000L;
@@ -390,9 +348,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public int cleanupOldDailyMetrics(int retentionDays) {
         this.ensureInitialized();
         String cutoffDate = LocalDate.now(ZoneOffset.UTC).minusDays(retentionDays).toString();
@@ -414,9 +369,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public int cleanupOldItemMetrics(int retentionDays) {
         this.ensureInitialized();
         String cutoffDate = LocalDate.now(ZoneOffset.UTC).minusDays(retentionDays).toString();
@@ -465,12 +417,6 @@ public class AnalyticsDatabase {
         return new ItemMetrics(rs.getString("date"), rs.getString("material"), rs.getInt("buy_count"), rs.getInt("sell_count"), rs.getInt("total_quantity"), rs.getLong("total_value"));
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     public String getMetadataValue(String key) {
         this.ensureInitialized();
         String sql = "SELECT value FROM analytics_metadata WHERE key = ?";
@@ -490,9 +436,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public void setMetadataValue(String key, String value) {
         this.ensureInitialized();
         String sql = "INSERT OR REPLACE INTO analytics_metadata (key, value) VALUES (?, ?)";
@@ -509,9 +452,6 @@ public class AnalyticsDatabase {
         }
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     public void executeRaw(String sql) throws SQLException {
         this.ensureInitialized();
         Object object = this.connectionLock;
