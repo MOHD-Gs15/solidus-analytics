@@ -32,6 +32,30 @@ jobs:
       - name: Run tests
         run: ./gradlew test
 
+      - name: Coverage report (opt-in, non-blocking)
+        run: ./gradlew testWithCoverage
+        continue-on-error: true
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: jacoco-report
+          path: build/reports/jacoco/
+
+      - name: SpotBugs (non-blocking during the Java 25 toolchain shakeout)
+        run: ./gradlew spotbugsMain
+        continue-on-error: true
+
+      - name: Upload SpotBugs report
+        uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: spotbugs-report
+          path: build/reports/spotbugs/
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
