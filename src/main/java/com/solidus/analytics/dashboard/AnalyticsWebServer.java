@@ -1,14 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- *
- * Could not load the following classes:
- *  fi.iki.elonen.NanoHTTPD
- *  fi.iki.elonen.NanoHTTPD$IHTTPSession
- *  fi.iki.elonen.NanoHTTPD$Method
- *  fi.iki.elonen.NanoHTTPD$Response
- *  fi.iki.elonen.NanoHTTPD$Response$IStatus
- *  fi.iki.elonen.NanoHTTPD$Response$Status
- */
 package com.solidus.analytics.dashboard;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
@@ -24,6 +13,8 @@ public class AnalyticsWebServer
 extends NanoHTTPD {
     private final AnalyticsEngine engine;
     private final String passwordHash;
+    /** Per-IP throttling for Basic auth (PBKDF2 DoS + brute-force mitigation). */
+    private final AuthRateLimiter authLimiter = new AuthRateLimiter();
     private volatile String cachedData = "{}";
     private volatile boolean running = false;
 
@@ -68,8 +59,18 @@ extends NanoHTTPD {
         if (!NanoHTTPD.Method.GET.equals(method)) {
             return AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, "text/plain", "Method Not Allowed");
         }
+        // Rate limiting runs BEFORE the PBKDF2 verification: a blocked IP is
+        // rejected cheaply, so request floods cannot pin the server CPU on
+        // password derivations (and online guessing is capped).
+        String remoteIp = session.getRemoteIpAddress();
+        if (this.authLimiter.isBlocked(remoteIp)) {
+            SolidusAnalyticsMod.LOGGER.warn("Analytics dashboard: auth rate limit hit from {}", remoteIp);
+            NanoHTTPD.Response tooMany = AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.TOO_MANY_REQUESTS, "text/plain", "Too many failed attempts. Try again later.");
+            tooMany.addHeader("Retry-After", "60");
+            return tooMany;
+        }
         if (!this.isAuthenticated(session)) {
-            NanoHTTPD.Response unauthorized = AnalyticsWebServer.newFixedLengthResponse((NanoHTTPD.Response.IStatus)NanoHTTPD.Response.Status.UNAUTHORIZED, (String)"text/html", (String)"<html><body><h1>401 Unauthorized</h1><p>Valid credentials required.</p></body></html>");
+            NanoHTTPD.Response unauthorized = AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.UNAUTHORIZED, "text/html", "<html><body><h1>401 Unauthorized</h1><p>Valid credentials required.</p></body></html>");
             // SEC FIX: never reveal the setup command to unauthenticated callers.
             // Standard Basic-auth clients need this header to prompt for credentials.
             unauthorized.addHeader("WWW-Authenticate", "Basic realm=\"Solidus Analytics\"");
@@ -122,37 +123,38 @@ extends NanoHTTPD {
     }
 
     private boolean isAuthenticated(NanoHTTPD.IHTTPSession session) {
+        String remoteIp = session.getRemoteIpAddress();
         if (this.passwordHash == null || this.passwordHash.isBlank()) {
             return false;
         }
         String authHeader = (String)session.getHeaders().get("authorization");
         if (authHeader == null || !authHeader.startsWith("Basic ")) {
+            this.authLimiter.recordFailure(remoteIp);
             return false;
         }
         try {
             String decoded = new String(Base64.getDecoder().decode(authHeader.substring(6)), StandardCharsets.UTF_8);
-            int colonIndex = decoded.indexOf(58);
+            int colonIndex = decoded.indexOf(':');
             String password = colonIndex >= 0 ? decoded.substring(colonIndex + 1) : decoded;
-            return DashboardEncryption.verifyPassword(password.toCharArray(), this.passwordHash);
+            if (DashboardEncryption.verifyPassword(password.toCharArray(), this.passwordHash)) {
+                this.authLimiter.recordSuccess(remoteIp);
+                return true;
+            }
+            this.authLimiter.recordFailure(remoteIp);
+            return false;
         }
         catch (Exception e) {
+            this.authLimiter.recordFailure(remoteIp);
             return false;
         }
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     private String loadResource(String path) {
-        try (InputStream is = ((Object)((Object)this)).getClass().getResourceAsStream(path);){
+        try (InputStream is = this.getClass().getResourceAsStream(path)) {
             if (is == null) {
-                String string2 = null;
-                return string2;
+                return null;
             }
-            String string = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            return string;
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
         catch (IOException e) {
             SolidusAnalyticsMod.LOGGER.warn("Failed to load resource: {}", (Object)path);
