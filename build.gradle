@@ -1,6 +1,52 @@
 plugins {
     id 'java'
+    id 'jacoco'
+    id 'com.github.spotbugs' version '6.1.7'
     id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+// ----------------------------------------------------------
+// Static analysis & coverage (Phase 1 tooling, audit follow-up)
+// SpotBugs runs non-blocking on CI until the Java 25 toolchain shakeout
+// settles; coverage is OPT-IN via testWithCoverage so the default `test`
+// run stays agent-free.
+// ----------------------------------------------------------
+jacoco {
+    toolVersion = '0.8.14'
+}
+
+spotbugs {
+    ignoreFailures = true   // non-blocking during the Java 25 toolchain shakeout
+}
+
+tasks.withType(com.github.spotbugs.snom.SpotBugsTask).configureEach {
+    reports {
+        html.required = true
+        xml.required = true
+    }
+}
+
+tasks.named('test') {
+    jacoco {
+        enabled = false   // keep the default test run fast and agent-free
+    }
+}
+
+tasks.register('testWithCoverage', Test) {
+    group = 'verification'
+    description = 'Runs tests with the JaCoCo agent and generates the coverage report.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    finalizedBy tasks.jacocoTestReport
+}
+
+tasks.named('jacocoTestReport') {
+    dependsOn tasks.testWithCoverage
+    executionData tasks.testWithCoverage
+    reports {
+        xml.required = true
+        html.required = true
+    }
 }
 
 group = project.maven_group
@@ -47,7 +93,7 @@ tasks.withType(JavaCompile).configureEach {
     options.release = project.java_version as int
 }
 
-test {
+tasks.withType(Test).configureEach {
     useJUnitPlatform()
     testLogging {
         events 'passed', 'skipped', 'failed'
