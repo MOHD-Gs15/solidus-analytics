@@ -48,9 +48,12 @@
     if (!fraud.length) { alerts.textContent = 'No active alerts'; }
     fraud.slice(0, 8).forEach((item) => {
       const row = document.createElement('div'); row.className = 'list-row';
-      const label = document.createElement('span'); label.textContent = item.description || item.type || 'Risk signal';
-      const severity = document.createElement('strong'); severity.className = 'bad'; severity.textContent = item.severity || 'ALERT';
-      row.append(label, severity); alerts.append(row);
+      const label = document.createElement('span'); label.className = 'row-label';
+      label.textContent = item.description || item.type || 'Risk signal';
+      const chip = document.createElement('span');
+      chip.className = 'chip ' + severityClass(item.severity);
+      chip.textContent = item.severity || 'ALERT';
+      row.append(label, chip); alerts.append(row);
     });
 
     // Top items: builder emits { bought: [...], sold: [...] } - merge quantities
@@ -73,11 +76,21 @@
     }
     const topEntries = [...merged.entries()].sort((a, b) => b[1] - a[1]);
     if (!topEntries.length) { items.textContent = 'No item data'; }
-    topEntries.slice(0, 8).forEach(([material, qty]) => {
-      const row = document.createElement('div'); row.className = 'list-row';
-      const label = document.createElement('span'); label.textContent = material;
-      const count = document.createElement('strong'); count.textContent = fmt(qty);
-      row.append(label, count); items.append(row);
+    const maxQty = topEntries.length ? topEntries[0][1] : 0;
+    topEntries.slice(0, 8).forEach(([material, qty], idx) => {
+      const row = document.createElement('div'); row.className = 'item-row';
+      const rank = document.createElement('span'); rank.className = 'rank' + (idx === 0 ? ' rank-1' : '');
+      rank.textContent = String(idx + 1);
+      const label = document.createElement('span'); label.className = 'row-label';
+      label.textContent = material;
+      const track = document.createElement('span'); track.className = 'bar-track';
+      const fill = document.createElement('span'); fill.className = 'bar-fill';
+      // proportional share of the leader (CSP-safe: CSSOM, not inline attrs)
+      fill.style.width = maxQty > 0 ? `${Math.max(4, Math.round((qty / maxQty) * 100))}%` : '4%';
+      track.append(fill);
+      const count = document.createElement('span'); count.className = 'item-qty';
+      count.textContent = fmt(qty);
+      row.append(rank, label, track, count); items.append(row);
     });
 
     const history = $('history'); history.replaceChildren();
@@ -85,12 +98,30 @@
     renderVolumeChart(rows);
     if (!rows.length) { history.textContent = 'No history'; }
     // Builder returns newest-first (ORDER BY date DESC) - show the newest 10
-    rows.slice(0, 10).forEach((item) => {
+    const visible = rows.slice(0, 10);
+    const maxVol = Math.max(0, ...visible.map((item) => Number(item.transactionVolume ?? item.volume ?? 0)));
+    visible.forEach((item) => {
       const row = document.createElement('div'); row.className = 'history-row';
-      const date = document.createElement('span'); date.textContent = item.date || '—';
+      const date = document.createElement('span'); date.className = 'muted';
+      date.textContent = item.date || '—';
+      const track = document.createElement('span'); track.className = 'bar-track';
+      const fill = document.createElement('span'); fill.className = 'bar-fill bar-fill-soft';
+      const vol = Number(item.transactionVolume ?? item.volume ?? 0);
+      fill.style.width = maxVol > 0 ? `${Math.max(4, Math.round((vol / maxVol) * 100))}%` : '4%';
+      track.append(fill);
       const volume = document.createElement('strong'); volume.textContent = money(item.transactionVolume ?? item.volume);
-      row.append(date, volume); history.append(row);
+      row.append(date, track, volume); history.append(row);
     });
+  }
+
+  // Severity chip class: HIGH -> bad, MEDIUM -> warn, LOW -> muted
+  function severityClass(severity) {
+    switch (String(severity || '').toUpperCase()) {
+      case 'HIGH': return 'chip-bad';
+      case 'MEDIUM': return 'chip-warn';
+      case 'LOW': return 'chip-muted';
+      default: return 'chip-muted';
+    }
   }
 
   // Dependency-free SVG line chart for daily trade volume (S$) - the
@@ -174,10 +205,10 @@
       const response = await fetch('/api/data', { headers: { Accept: 'application/json' }, cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       render(await response.json());
-      $('status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      $('status-text').textContent = `Updated ${new Date().toLocaleTimeString()}`;
       $('status').className = 'status good';
     } catch (error) {
-      $('status').textContent = 'Dashboard unavailable';
+      $('status-text').textContent = 'Dashboard unavailable';
       $('status').className = 'status bad';
       console.warn('Analytics dashboard request failed', error);
     }
