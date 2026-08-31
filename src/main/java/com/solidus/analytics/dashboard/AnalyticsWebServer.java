@@ -81,6 +81,11 @@ extends NanoHTTPD {
         response.addHeader("X-Content-Type-Options", "nosniff");
         response.addHeader("X-Frame-Options", "DENY");
         response.addHeader("Referrer-Policy", "no-referrer");
+        // CSP: the dashboard loads exactly one external script (/js/app.js) and
+        // one stylesheet (/css/style.css) and uses no inline handlers or
+        // inline styles, so a strict same-origin policy costs nothing and
+        // neutralizes any future injection vector in served data.
+        response.addHeader("Content-Security-Policy", "default-src 'self'");
         return response;
     }
 
