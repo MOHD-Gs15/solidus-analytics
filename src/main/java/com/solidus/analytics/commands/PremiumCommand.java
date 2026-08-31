@@ -56,6 +56,10 @@ public class PremiumCommand {
                 .executes(context -> executeDashboardSetup(context, engine))))
             .then(Commands.literal("unlock").then(Commands.argument("password", MessageArgument.message())
                 .executes(context -> executeDashboardUnlock(context, engine))))
+            .then(Commands.literal("setupfile").then(Commands.argument("file", StringArgumentType.string())
+                .executes(context -> executeDashboardSetupFile(context, engine))))
+            .then(Commands.literal("unlockfile").then(Commands.argument("file", StringArgumentType.string())
+                .executes(context -> executeDashboardUnlockFile(context, engine))))
             .then(Commands.literal("github").then(Commands.argument("owner", StringArgumentType.word())
                 .then(Commands.argument("repo", StringArgumentType.word())
                     .executes(context -> executeDashboardGitHub(context, engine)))))
@@ -293,6 +297,67 @@ public class PremiumCommand {
             PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  " + result, ChatFormatting.RED));
         }
         return 1;
+    }
+
+    /**
+     * R09: file-based setup. The password is read from a one-line file and the
+     * file is DELETED after use, so the secret never enters the chat command
+     * line (command history / server logs). Path is a quoted brigadier string
+     * (handles spaces). Resolve relative paths against the server's game dir.
+     */
+    private static int executeDashboardSetupFile(CommandContext<CommandSourceStack> context, AnalyticsEngine engine) {
+        CommandSourceStack source = (CommandSourceStack)context.getSource();
+        DashboardManager dm = engine.getDashboardManager();
+        if (dm == null) {
+            PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Dashboard system not available.", ChatFormatting.RED));
+            return 0;
+        }
+        String rawPath = StringArgumentType.getString(context, "file");
+        Path file = resolvePasswordPath(source, rawPath);
+        if (file == null) {
+            PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Path escapes the server directory - refused.", ChatFormatting.RED));
+            return 0;
+        }
+        String result = dm.setupEncryptionFromFile(file);
+        boolean ok = result.contains("successfully");
+        PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  " + result, ok ? ChatFormatting.GREEN : ChatFormatting.RED));
+        return ok ? 1 : 0;
+    }
+
+    /** R09: file-based unlock - see {@link #executeDashboardSetupFile}. */
+    private static int executeDashboardUnlockFile(CommandContext<CommandSourceStack> context, AnalyticsEngine engine) {
+        CommandSourceStack source = (CommandSourceStack)context.getSource();
+        DashboardManager dm = engine.getDashboardManager();
+        if (dm == null) {
+            PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Dashboard system not available.", ChatFormatting.RED));
+            return 0;
+        }
+        String rawPath = StringArgumentType.getString(context, "file");
+        Path file = resolvePasswordPath(source, rawPath);
+        if (file == null) {
+            PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Path escapes the server directory - refused.", ChatFormatting.RED));
+            return 0;
+        }
+        String result = dm.unlockEncryptionFromFile(file);
+        boolean ok = result.contains("unlocked");
+        PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  " + result, ok ? ChatFormatting.GREEN : ChatFormatting.RED));
+        return ok ? 1 : 0;
+    }
+
+    /**
+     * Resolves a password-file path, refusing traversal outside the server's
+     * own directory tree (an admin running this from console already has file
+     * access, but a delegated OP must not read arbitrary system files).
+     */
+    private static Path resolvePasswordPath(CommandSourceStack source, String rawPath) {
+        try {
+            Path root = source.getServer().getServerDirectory().toAbsolutePath().normalize();
+            Path resolved = root.resolve(rawPath).normalize();
+            return resolved.startsWith(root) ? resolved : null;
+        }
+        catch (Exception e) {
+            return null;
+        }
     }
 
     private static int executeDashboardGitHub(CommandContext<CommandSourceStack> context, AnalyticsEngine engine) {

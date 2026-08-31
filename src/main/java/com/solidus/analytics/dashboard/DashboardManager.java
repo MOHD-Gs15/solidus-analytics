@@ -164,9 +164,71 @@ public class DashboardManager {
             return "Encryption is not set up yet. Use /analytics dashboard setup <password> first.";
         }
         if (this.encryption.unlock(password.toCharArray(), storedHash)) {
+            migrateLegacyHashIfAny(password);
             return "Dashboard encryption unlocked. Data will be published encrypted.";
         }
         return "Incorrect password. Dashboard encryption remains locked.";
+    }
+
+    /**
+     * R09: file-based setup. The password never enters the chat command line,
+     * so it cannot leak into the player's command history or server logs. The
+     * file is read, used, then deleted in the same step.
+     *
+     * @param passwordFile path to a one-line text file holding the password
+     * @return user-facing result message
+     */
+    public String setupEncryptionFromFile(Path passwordFile) {
+        String result = this.applyPasswordFile(passwordFile, false);
+        return result;
+    }
+
+    /** R09: file-based unlock - see {@link #setupEncryptionFromFile(Path)}. */
+    public String unlockEncryptionFromFile(Path passwordFile) {
+        return this.applyPasswordFile(passwordFile, true);
+    }
+
+    private String applyPasswordFile(Path passwordFile, boolean unlock) {
+        if (passwordFile == null || !Files.isRegularFile(passwordFile)) {
+            return "Password file not found: " + passwordFile;
+        }
+        try {
+            String password = Files.readString(passwordFile).lines()
+                .filter(line -> !line.isBlank())
+                .findFirst().orElse("").trim();
+            if (password.isBlank()) {
+                return "Password file is empty (first line must hold the password).";
+            }
+            String result = unlock ? this.unlockEncryption(password) : this.setupEncryption(password);
+            // One-shot semantics: the secret must not linger on disk after use.
+            boolean deleted = Files.deleteIfExists(passwordFile);
+            SolidusAnalyticsMod.LOGGER.info(
+                "Password file {} consumed and {} (one-shot).",
+                passwordFile.getFileName(), deleted ? "deleted" : "could not be deleted - remove it manually");
+            return result + (unlock ? "" : " Password file was deleted after use.");
+        }
+        catch (Exception e) {
+            SolidusAnalyticsMod.LOGGER.error("Failed to read password file {}", passwordFile, e);
+            return "Failed to read password file: " + e.getMessage();
+        }
+    }
+
+    /**
+     * R19: legacy hash migration. The single-iteration SHA-256 record verifies
+     * only so it can be replaced - the moment a legacy unlock succeeds the
+     * password is re-hashed with PBKDF2 (210k iterations) and persisted, after
+     * which the weak verifier is never consulted again for this installation.
+     */
+    private void migrateLegacyHashIfAny(String provenPassword) {
+        String storedHash = this.dashboardProps.getProperty("encryption.password_hash", "");
+        if (!DashboardEncryption.isLegacyHash(storedHash)) {
+            return;
+        }
+        String upgraded = DashboardEncryption.hashPassword(provenPassword.toCharArray());
+        this.dashboardProps.setProperty("encryption.password_hash", upgraded);
+        this.saveConfig();
+        SolidusAnalyticsMod.LOGGER.info(
+            "Dashboard password hash migrated from legacy SHA-256 to PBKDF2 (210k iterations).");
     }
 
     public String setupGitHub(String owner, String repo) {
@@ -232,6 +294,7 @@ public class DashboardManager {
         String envPassword = System.getenv("SOLIDUS_DASHBOARD_PASSWORD");
         if (envPassword != null && !envPassword.isBlank()) {
             if (this.encryption.unlock(envPassword.toCharArray(), storedHash)) {
+                this.migrateLegacyHashIfAny(envPassword);
                 SolidusAnalyticsMod.LOGGER.info("Dashboard auto-unlocked via SOLIDUS_DASHBOARD_PASSWORD env var.");
                 return true;
             }
@@ -244,6 +307,7 @@ public class DashboardManager {
                 String keyPassword = Files.readString(keyFile).trim();
                 if (!keyPassword.isBlank()) {
                     if (this.encryption.unlock(keyPassword.toCharArray(), storedHash)) {
+                        this.migrateLegacyHashIfAny(keyPassword);
                         SolidusAnalyticsMod.LOGGER.info("Dashboard auto-unlocked via .dashboard-key file. Ensure this file has restricted permissions (chmod 600).");
                         return true;
                     }

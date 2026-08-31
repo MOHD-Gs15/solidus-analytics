@@ -1,6 +1,7 @@
 package com.solidus.analytics.engine;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.DirectDb;
 import com.solidus.analytics.storage.AnalyticsDatabase;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -133,13 +134,9 @@ public class LiveMetricsTracker {
             return; // economy db not readable yet (schema missing) - retry next cycle
         }
         long since = this.lastPolledId.get();
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        String sql = "    SELECT id, type, player_uuid, player_name, amount, item_material, item_quantity\n    FROM transaction_log\n    WHERE id > ?\n    ORDER BY id ASC\n";
-        try (Connection conn = DriverManager.getConnection(dbUrl);
-             PreparedStatement ps = conn.prepareStatement(sql);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
+                String sql = "    SELECT id, type, player_uuid, player_name, amount, item_material, item_quantity\n    FROM transaction_log\n    WHERE id > ?\n    ORDER BY id ASC\n";
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, since);
             long maxId = since;
             int processed = 0;
@@ -241,12 +238,8 @@ public class LiveMetricsTracker {
     // metrics dead forever. A successful seed with an empty log leaves the
     // cursor at 0, which pollNewTransactions now treats as a valid position.
     private boolean tryInitializeCursor() {
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        String sql = "SELECT MAX(id) as max_id FROM transaction_log";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement pragmaStmt = conn.createStatement();){
-                pragmaStmt.execute("PRAGMA query_only = ON");
-            }
+                String sql = "SELECT MAX(id) as max_id FROM transaction_log";
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)){
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql);){
                 if (rs.next()) {

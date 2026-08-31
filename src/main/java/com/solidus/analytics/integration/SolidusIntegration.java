@@ -1,12 +1,13 @@
 package com.solidus.analytics.integration;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.DirectDb;
 import java.lang.reflect.Method;
 import java.sql.Connection;
+import java.sql.Statement;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -136,18 +137,12 @@ public final class SolidusIntegration {
         if (this.economyDbPath == null) {
             return -1;
         }
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
         String sql = "SELECT COUNT(*) as player_count FROM player_balances";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery(sql)) {
-                if (!rs.next()) return -1;
-                int n = rs.getInt("player_count");
-                return n;
-            }
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            if (!rs.next()) return -1;
+            return rs.getInt("player_count");
         }
         catch (SQLException e) {
             SolidusAnalyticsMod.LOGGER.debug("Failed to query player count from economy.db", (Throwable)e);

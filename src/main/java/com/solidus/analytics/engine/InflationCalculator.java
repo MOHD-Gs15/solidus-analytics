@@ -1,6 +1,7 @@
 package com.solidus.analytics.engine;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.DirectDb;
 import com.solidus.analytics.storage.AnalyticsDatabase;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -54,12 +55,8 @@ public class InflationCalculator {
     }
 
     private long getMoneySupply() {
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        String sql = "SELECT COALESCE(SUM(balance), 0) as total_wealth, COUNT(*) as player_count FROM player_balances";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
+                String sql = "SELECT COALESCE(SUM(balance), 0) as total_wealth, COUNT(*) as player_count FROM player_balances";
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 if (!rs.next()) return 0L;
@@ -84,12 +81,8 @@ public class InflationCalculator {
         if (this.auctionsDbPath == null) {
             return 0L;
         }
-        String dbUrl = "jdbc:sqlite:" + this.auctionsDbPath;
         String sql = "SELECT COALESCE(SUM(price), 0) as total_value FROM auction_listings WHERE status = 0";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
+        try (Connection conn = DirectDb.openReadOnly(this.auctionsDbPath)) {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 if (!rs.next()) return 0L;
@@ -104,13 +97,9 @@ public class InflationCalculator {
     }
 
     private long estimateShopThroughput() {
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        long twentyFourHoursAgo = System.currentTimeMillis() - 86400000L;
+                long twentyFourHoursAgo = System.currentTimeMillis() - 86400000L;
         String sql = "SELECT COALESCE(SUM(ABS(amount)), 0) as shop_volume FROM transaction_log WHERE type IN ('SHOP_BUY', 'SHOP_SELL') AND timestamp > ?";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             try (PreparedStatement ps = conn.prepareStatement(sql);){
                 ps.setLong(1, twentyFourHoursAgo);
                 try (ResultSet rs = ps.executeQuery();){

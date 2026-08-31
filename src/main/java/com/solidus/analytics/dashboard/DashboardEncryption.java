@@ -163,6 +163,33 @@ public class DashboardEncryption {
         }
     }
 
+    /**
+     * R19: detects a pre-PBKDF2 stored hash (single-iteration SHA-256 with a
+     * salt, format {@code hex(salt):hex(digest)}). Legacy hashes verify only
+     * for migration: DashboardManager re-hashes the password with PBKDF2 the
+     * moment a legacy unlock succeeds, after which the legacy path is never
+     * consulted again for that installation.
+     */
+    public static boolean isLegacyHash(String storedHash) {
+        if (storedHash == null || storedHash.isBlank()) {
+            return false;
+        }
+        String[] parts = storedHash.split("\\$", -1);
+        if (parts.length == 5 && "pbkdf2".equals(parts[0])) {
+            return false;
+        }
+        String[] legacy = storedHash.split(":", 2);
+        if (legacy.length != 2) {
+            return false;
+        }
+        try {
+            return hexToBytes(legacy[0]).length == SALT_LENGTH
+                && hexToBytes(legacy[1]).length == 32; // SHA-256 digest length
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static byte[] derivePasswordHash(char[] password, byte[] salt, int iterations) throws Exception {
         PBEKeySpec spec = new PBEKeySpec(password, salt, iterations, KEY_LENGTH);
         try {

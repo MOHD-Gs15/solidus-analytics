@@ -1,6 +1,7 @@
 package com.solidus.analytics.premium;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.DirectDb;
 import com.solidus.analytics.engine.AnalyticsEngine;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -32,6 +33,8 @@ public class FraudDetector {
         newAlerts.addAll(this.checkRapidWealthGain());
         newAlerts.addAll(this.checkHighFrequencyTrading());
         newAlerts.addAll(this.checkUnusualTransactionSize());
+        newAlerts.addAll(this.checkCircularTrading());
+        newAlerts.addAll(this.checkZeroValueTransfers());
         for (FraudAlert alert : newAlerts) {
             this.addAlert(alert);
         }
@@ -43,13 +46,9 @@ public class FraudDetector {
 
     private List<FraudAlert> checkRapidWealthGain() {
         ArrayList<FraudAlert> alerts = new ArrayList<FraudAlert>();
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        long oneHourAgo = System.currentTimeMillis() - 3600000L;
+                long oneHourAgo = System.currentTimeMillis() - 3600000L;
         String sql = "    SELECT player_uuid, player_name,\n           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,\n           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as spending\n    FROM transaction_log\n    WHERE timestamp > ?\n    GROUP BY player_uuid, player_name\n    HAVING income > 0\n    ORDER BY income DESC\n";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             try (PreparedStatement ps = conn.prepareStatement(sql);){
                 ps.setLong(1, oneHourAgo);
                 try (ResultSet rs = ps.executeQuery();){
@@ -87,13 +86,9 @@ public class FraudDetector {
 
     private List<FraudAlert> checkHighFrequencyTrading() {
         ArrayList<FraudAlert> alerts = new ArrayList<FraudAlert>();
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        long oneMinuteAgo = System.currentTimeMillis() - 60000L;
+                long oneMinuteAgo = System.currentTimeMillis() - 60000L;
         String sql = "    SELECT player_uuid, player_name, COUNT(*) as tx_count\n    FROM transaction_log\n    WHERE timestamp > ?\n    GROUP BY player_uuid, player_name\n    HAVING tx_count > ?\n";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement();){
-                stmt.execute("PRAGMA query_only = ON");
-            }
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             try (PreparedStatement ps = conn.prepareStatement(sql);){
                 ps.setLong(1, oneMinuteAgo);
                 ps.setInt(2, 30);
@@ -113,14 +108,10 @@ public class FraudDetector {
 
     private List<FraudAlert> checkUnusualTransactionSize() {
         ArrayList<FraudAlert> alerts = new ArrayList<FraudAlert>();
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        long oneHourAgo = System.currentTimeMillis() - 3600000L;
+                long oneHourAgo = System.currentTimeMillis() - 3600000L;
         String avgSql = "SELECT AVG(ABS(amount)) as avg_amount FROM transaction_log WHERE timestamp > ?";
         String outlierSql = "    SELECT player_uuid, player_name, ABS(amount) as amount, type\n    FROM transaction_log\n    WHERE timestamp > ? AND ABS(amount) > ?\n    ORDER BY amount DESC LIMIT 10\n";
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("PRAGMA query_only = ON");
-            }
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)){
             double avgAmount = 0.0;
             try (PreparedStatement ps = conn.prepareStatement(avgSql)) {
                 ps.setLong(1, oneHourAgo);
@@ -149,6 +140,136 @@ public class FraudDetector {
         }
         catch (SQLException e) {
             SolidusAnalyticsMod.LOGGER.error("Failed to check unusual transaction sizes", (Throwable)e);
+        }
+        return alerts;
+    }
+
+    /**
+     * R13: implements the previously-declared-but-never-executed
+     * CIRCULAR_TRADING check. Fetches the last 24h of peer-to-peer payments
+     * (PAY_SEND rows: sender -> target) and detects closed loops - wash-trading
+     * patterns where money keeps returning to its origin (A->B & B->A ping-pong,
+     * or A->B->C->A round trips). Each loop is one alert; a player participating
+     * in {@value #CIRCULAR_TRADE_THRESHOLD}+ loops is escalated to HIGH.
+     */
+    private List<FraudAlert> checkCircularTrading() {
+        ArrayList<FraudAlert> alerts = new ArrayList<FraudAlert>();
+        long oneDayAgo = System.currentTimeMillis() - 86_400_000L;
+        // PAY_SEND only: every transfer also writes a mirrored PAY_RECEIVE row,
+        // so scanning both would double-count every edge.
+        String sql = "SELECT player_uuid, player_name, target_uuid, target_name, ABS(amount) as amount\n"
+            + "FROM transaction_log\n"
+            + "WHERE timestamp > ? AND type = 'PAY_SEND'\n"
+            + "LIMIT 50000\n"; // bounded scan: fraud checks must never pin memory
+        // Graph: sender -> list of (receiver, amount)
+        java.util.Map<String, java.util.List<Edge>> graph = new java.util.HashMap<>();
+        java.util.Map<String, String> names = new java.util.HashMap<>();
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, oneDayAgo);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String from = rs.getString("player_uuid");
+                    String to = rs.getString("target_uuid");
+                    if (from == null || to == null || from.equals(to)) continue;
+                    graph.computeIfAbsent(from, k -> new ArrayList<>())
+                        .add(new Edge(to, rs.getDouble("amount")));
+                    names.putIfAbsent(from, rs.getString("player_name"));
+                }
+            }
+        } catch (SQLException e) {
+            SolidusAnalyticsMod.LOGGER.error("Failed to check circular trading", (Throwable)e);
+            return alerts;
+        }
+        if (graph.isEmpty()) {
+            return alerts;
+        }
+        // 2-loops (ping-pong): A->B and B->A
+        java.util.Map<String, Integer> loopsPerPlayer = new java.util.HashMap<>();
+        java.util.Set<String> reportedPairs = new java.util.HashSet<>();
+        for (java.util.Map.Entry<String, java.util.List<Edge>> entry : graph.entrySet()) {
+            String a = entry.getKey();
+            for (Edge e1 : entry.getValue()) {
+                String b = e1.to();
+                if (a.compareTo(b) < 0 && graph.containsKey(b)
+                        && graph.get(b).stream().anyMatch(e2 -> e2.to().equals(a))) {
+                    String pairKey = a + "|" + b;
+                    if (reportedPairs.add(pairKey)) {
+                        loopsPerPlayer.merge(a, 1, Integer::sum);
+                        loopsPerPlayer.merge(b, 1, Integer::sum);
+                        alerts.add(new FraudAlert(Instant.now().toEpochMilli(),
+                            FraudAlert.Type.CIRCULAR_TRADING, names.get(a), a,
+                            String.format("Two-way payment loop detected between %s and %s (mutual transfers within 24h)",
+                                names.get(a), names.get(b)),
+                            FraudAlert.Severity.MEDIUM));
+                    }
+                }
+            }
+        }
+        // 3-loops (round trips): A->B->C->A
+        for (java.util.Map.Entry<String, java.util.List<Edge>> entry : graph.entrySet()) {
+            String a = entry.getKey();
+            for (Edge ab : entry.getValue()) {
+                java.util.List<Edge> fromB = graph.get(ab.to());
+                if (fromB == null) continue;
+                for (Edge bc : fromB) {
+                    if (bc.to().equals(a)) continue; // that is a 2-loop
+                    java.util.List<Edge> fromC = graph.get(bc.to());
+                    if (fromC == null) continue;
+                    boolean closes = fromC.stream().anyMatch(ca -> ca.to().equals(a));
+                    if (closes && reportedPairs.add("3|" + a + "|" + ab.to() + "|" + bc.to())) {
+                        loopsPerPlayer.merge(a, 1, Integer::sum);
+                        alerts.add(new FraudAlert(Instant.now().toEpochMilli(),
+                            FraudAlert.Type.CIRCULAR_TRADING, names.get(a), a,
+                            String.format("Circular payment route %s -> %s -> %s -> %s within 24h",
+                                names.get(a), names.get(ab.to()), names.get(bc.to()), names.get(a)),
+                            FraudAlert.Severity.MEDIUM));
+                    }
+                }
+            }
+        }
+        // Escalate repeat participants
+        for (FraudAlert alert : alerts) {
+            if (loopsPerPlayer.getOrDefault(alert.playerUuid, 0) >= CIRCULAR_TRADE_THRESHOLD) {
+                alerts.set(alerts.indexOf(alert), new FraudAlert(alert.timestamp, alert.type,
+                    alert.playerName, alert.playerUuid,
+                    alert.description + String.format(" - player involved in %d loops (threshold: %d)",
+                        loopsPerPlayer.get(alert.playerUuid), CIRCULAR_TRADE_THRESHOLD),
+                    FraudAlert.Severity.HIGH));
+            }
+        }
+        return alerts;
+    }
+
+    /**
+     * R13: implements the previously-declared-but-never-executed
+     * ZERO_VALUE_TRANSFER check. Core rejects amount <= 0 on every payment
+     * path, so a zero/near-zero transfer row can only appear through a mod-side
+     * bypass or direct database writes - a data-integrity anomaly worth flagging
+     * (fake activity volume, notification spam, or a broken integration).
+     */
+    private List<FraudAlert> checkZeroValueTransfers() {
+        ArrayList<FraudAlert> alerts = new ArrayList<FraudAlert>();
+        long oneDayAgo = System.currentTimeMillis() - 86_400_000L;
+        String sql = "SELECT player_uuid, player_name, COUNT(*) as zero_count\n"
+            + "FROM transaction_log\n"
+            + "WHERE timestamp > ? AND type = 'PAY_SEND' AND ABS(amount) < 0.01\n"
+            + "GROUP BY player_uuid, player_name\n";
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, oneDayAgo);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    int zeroCount = rs.getInt("zero_count");
+                    alerts.add(new FraudAlert(Instant.now().toEpochMilli(),
+                        FraudAlert.Type.ZERO_VALUE_TRANSFER, rs.getString("player_name"),
+                        rs.getString("player_uuid"),
+                        String.format("%d zero-value payment(s) in 24h - Core rejects amount<=0, this suggests a bypass or DB write", zeroCount),
+                        zeroCount > 10 ? FraudAlert.Severity.HIGH : FraudAlert.Severity.LOW));
+                }
+            }
+        } catch (SQLException e) {
+            SolidusAnalyticsMod.LOGGER.error("Failed to check zero-value transfers", (Throwable)e);
         }
         return alerts;
     }
@@ -190,6 +311,10 @@ public class FraudDetector {
             this.playerName = playerName;
             this.income = income;
         }
+    }
+
+    /** Directed transfer edge used by the circular-trading graph scan. */
+    private record Edge(String to, double amount) {
     }
 
     public static class FraudAlert {

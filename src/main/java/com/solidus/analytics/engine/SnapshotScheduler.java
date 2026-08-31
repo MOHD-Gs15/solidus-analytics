@@ -1,6 +1,7 @@
 package com.solidus.analytics.engine;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.DirectDb;
 import com.solidus.analytics.engine.AnalyticsEngine;
 import com.solidus.analytics.storage.AnalyticsDatabase;
 import com.solidus.analytics.util.GiniCoefficient;
@@ -79,12 +80,8 @@ public class SnapshotScheduler {
     // package-private: exercised directly by unit tests
     SnapshotData computeSnapshot() {
         SnapshotData data = new SnapshotData();
-        String dbUrl = "jdbc:sqlite:" + this.economyDbPath;
-        ArrayList<Long> balances = new ArrayList<Long>();
-        try (Connection conn = DriverManager.getConnection(dbUrl);){
-            try (Statement stmt2 = conn.createStatement();){
-                stmt2.execute("PRAGMA query_only = ON");
-            }
+                ArrayList<Long> balances = new ArrayList<Long>();
+        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             String sql = "SELECT balance FROM player_balances ORDER BY balance ASC";
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
@@ -123,11 +120,7 @@ public class SnapshotScheduler {
         data.auctionActiveListings = 0;
         data.auctionTotalValue = 0L;
         if (this.auctionsDbPath != null) {
-            String auctionUrl = "jdbc:sqlite:" + this.auctionsDbPath;
-            try (Connection conn = DriverManager.getConnection(auctionUrl);){
-                try (Statement stmt3 = conn.createStatement();){
-                    stmt3.execute("PRAGMA query_only = ON");
-                }
+                        try (Connection conn = DirectDb.openReadOnly(this.auctionsDbPath)) {
                 String sql = "SELECT COUNT(*) as cnt, COALESCE(SUM(price), 0) as total_val FROM auction_listings WHERE status = 0";
                 try (Statement stmt4 = conn.createStatement();
                      ResultSet rs = stmt4.executeQuery(sql);){
