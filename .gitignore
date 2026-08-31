@@ -29,3 +29,7 @@ Thumbs.db
 # Archives and generated artifacts
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
+
+# Solidus Cloud Relay (Node.js)
+cloud-relay/node_modules/
+cloud-relay/data/
