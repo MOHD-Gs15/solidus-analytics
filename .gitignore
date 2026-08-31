@@ -29,3 +29,8 @@ Thumbs.db
 # Archives and generated artifacts
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
+
+# License signing material (SA2) — private keys must NEVER be committed
+tools/license/keys/
+*private_key*.b64
+issued/
