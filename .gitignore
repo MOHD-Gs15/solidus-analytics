@@ -30,6 +30,10 @@ Thumbs.db
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
 
+# Solidus Cloud Relay (Node.js)
+cloud-relay/node_modules/
+cloud-relay/data/
+
 # License signing material (SA2) — private keys must NEVER be committed
 tools/license/keys/
 *private_key*.b64

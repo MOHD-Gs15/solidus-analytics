@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>Solidus Cloud</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- ================= LOGIN ================= -->
+<section id="login" class="screen">
+  <div class="card login-card">
+    <div class="brand">SOLIDUS <span>CLOUD</span></div>
+    <p class="muted">Economy control room for your Minecraft server.</p>
+    <form id="login-form">
+      <input id="login-name" autocomplete="username" placeholder="Username" required>
+      <input id="login-pass" type="password" autocomplete="current-password" placeholder="Password" required>
+      <button class="primary" type="submit">Sign in</button>
+      <div id="login-error" class="error hidden"></div>
+    </form>
+  </div>
+</section>
+
+<!-- ================= MAIN ================= -->
+<main id="app" class="screen hidden">
+  <header>
+    <div class="brand small">SOLIDUS <span>CLOUD</span></div>
+    <select id="server-select"></select>
+    <div id="conn-badge" class="badge off">offline</div>
+    <button id="logout" class="ghost" title="Sign out">⏻</button>
+  </header>
+
+  <section id="pair-panel" class="card hidden">
+    <h3>Pair a server</h3>
+    <p class="muted">From the server console (first boot) copy the pairing block into here.</p>
+    <input id="pair-server-id" placeholder="serverId (srv-…)">
+    <input id="pair-secret" placeholder="pairingSecret (64 hex)">
+    <input id="pair-name" placeholder="Display name (optional)">
+    <button id="pair-btn" class="primary">Pair</button>
+    <div id="pair-result" class="muted"></div>
+  </section>
+
+  <div id="state-banners"></div>
+
+  <section class="tiles">
+    <div class="tile"><div class="k">TPS 1m / 5m / 15m</div><div class="v" id="t-tps">—</div><div class="s" id="t-mspt"></div></div>
+    <div class="tile"><div class="k">RAM heap</div><div class="v" id="t-ram">—</div><div class="s" id="t-ram-bar"><i></i></div></div>
+    <div class="tile"><div class="k">CPU</div><div class="v" id="t-cpu">—</div><div class="s" id="t-load"></div></div>
+    <div class="tile"><div class="k">Players</div><div class="v" id="t-players">—</div><div class="s" id="t-pmax"></div></div>
+    <div class="tile"><div class="k">Money supply</div><div class="v" id="t-supply">—</div><div class="s" id="t-supply-d"></div></div>
+    <div class="tile"><div class="k">Gini / top 1%</div><div class="v" id="t-gini">—</div><div class="s" id="t-top1"></div></div>
+    <div class="tile"><div class="k">Volume today</div><div class="v" id="t-vol">—</div><div class="s" id="t-tx"></div></div>
+    <div class="tile"><div class="k">Auctions active</div><div class="v" id="t-auct">—</div><div class="s" id="t-auct-v"></div></div>
+  </section>
+
+  <div class="cols">
+    <section class="card">
+      <h3>Players</h3>
+      <table id="players-table"><thead><tr><th>Name</th><th>Mode</th><th>World</th><th>Session</th><th></th></tr></thead><tbody></tbody></table>
+      <p class="muted" id="players-empty">Waiting for telemetry…</p>
+    </section>
+
+    <section class="card">
+      <h3>Commands</h3>
+      <p class="muted">Risk levels: <b>R</b> read · <b>W1</b> one tap · <b>W2</b> typed name + reason · <b>D</b> password + 30s hold</p>
+      <div id="cmd-grid"></div>
+    </section>
+
+    <section class="card">
+      <h3>Audit feed</h3>
+      <div id="audit-feed" class="feed"></div>
+      <button id="audit-more" class="ghost">Load history…</button>
+    </section>
+  </div>
+
+  <footer class="muted">
+    Solidus Cloud v0.1 · <a href="javascript:void(0)" id="push-enroll">Enable push notifications</a>
+  </footer>
+</main>
+
+<!-- ================= COMMAND MODAL ================= -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="modal-title">Command</h3>
+    <p id="modal-desc" class="muted"></p>
+    <div id="modal-fields"></div>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="ghost">Cancel</button>
+      <button id="modal-send" class="primary">Execute</button>
+    </div>
+    <div id="modal-status" class="muted"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

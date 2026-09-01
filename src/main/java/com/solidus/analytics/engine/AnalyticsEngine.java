@@ -2,6 +2,7 @@ package com.solidus.analytics.engine;
 
 import com.solidus.analytics.AnalyticsConfig;
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.cloud.CloudAgent;
 import com.solidus.analytics.dashboard.DashboardManager;
 import com.solidus.analytics.engine.InflationCalculator;
 import com.solidus.analytics.engine.LiveMetricsTracker;
@@ -28,6 +29,8 @@ public class AnalyticsEngine {
     private DiscordWebhookNotifier discordNotifier;
     private WeeklyReportGenerator weeklyReportGenerator;
     private DashboardManager dashboardManager;
+    private CloudAgent cloudAgent;
+    private volatile net.minecraft.server.MinecraftServer attachedServer;
     private volatile boolean initialized = false;
     private volatile boolean premiumEnabled = false;
     private volatile boolean apiIntegrationAvailable = false;
@@ -68,6 +71,12 @@ public class AnalyticsEngine {
         this.initializePremium(this.configDirPath);
         this.dashboardManager = new DashboardManager(this, this.configDirPath);
         this.dashboardManager.initialize();
+        this.cloudAgent = new CloudAgent(this, this.configDirPath, FabricLoader.getInstance().getGameDir(),
+            this.economyDbPath, this.auctionsDbPath, this.configDirPath.resolve("analytics.db").toAbsolutePath().toString());
+        if (this.attachedServer != null) {
+            this.cloudAgent.attachServer(this.attachedServer);
+        }
+        this.cloudAgent.start();
         this.initialized = true;
         SolidusAnalyticsMod.LOGGER.info("Solidus Analytics Engine initialized successfully.");
         SolidusAnalyticsMod.LOGGER.info("API Integration: {} | Mode: {}", (Object)(this.apiIntegrationAvailable ? "ACTIVE" : "UNAVAILABLE"), (Object)(this.apiIntegrationAvailable ? "Full Integration" : "Standalone (DB-only)"));
@@ -110,6 +119,9 @@ public class AnalyticsEngine {
             return;
         }
         SolidusAnalyticsMod.LOGGER.info("Shutting down Solidus Analytics Engine...");
+        if (this.cloudAgent != null) {
+            this.cloudAgent.shutdown();
+        }
         if (this.dashboardManager != null) {
             this.dashboardManager.shutdown();
         }
@@ -138,6 +150,9 @@ public class AnalyticsEngine {
         }
         if (this.dashboardManager != null) {
             this.dashboardManager.onTick(currentTick);
+        }
+        if (this.cloudAgent != null) {
+            this.cloudAgent.onServerTick();
         }
         ++this.cleanupTickCounter;
         if (this.cleanupTickCounter >= 720000) {
@@ -206,6 +221,19 @@ public class AnalyticsEngine {
 
     public DashboardManager getDashboardManager() {
         return this.dashboardManager;
+    }
+
+    public CloudAgent getCloudAgent() {
+        return this.cloudAgent;
+    }
+
+    /** Called by the mod entrypoint before initialize() so the cloud agent and
+     *  console command path can reach the live server object. */
+    public void attachServer(net.minecraft.server.MinecraftServer server) {
+        this.attachedServer = server;
+        if (this.cloudAgent != null) {
+            this.cloudAgent.attachServer(server);
+        }
     }
 
     private void ensureInitialized() {

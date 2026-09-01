@@ -36,6 +36,7 @@ implements DedicatedServerModInitializer {
             catch (IOException e) {
                 LOGGER.error("Failed to create config directory: {}", (Object)configDir, (Object)e);
             }
+            analyticsEngine.attachServer(server);
             analyticsEngine.initialize(configDir.toAbsolutePath().toString());
             LOGGER.info("Solidus Analytics initialized successfully.");
         });
