@@ -62,3 +62,28 @@ jobs:
         with:
           name: test-results
           path: build/reports/tests/
+
+  # P2: the cloud relay runs its own end-to-end suite on every push/PR.
+  # smoke boots the real relay process and plays a fake agent + fake client;
+  # sqlite-store additionally kills and restarts the relay mid-test to prove
+  # the durable store (rings, offline queue, idempotency) survives.
+  relay:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: cloud-relay
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 24 (node:sqlite)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Relay tests (smoke + security + sqlite restart E2E)
+        run: npm test

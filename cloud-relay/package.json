@@ -1,6 +1,6 @@
 {
   "name": "solidus-cloud-relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Solidus Cloud Relay - store&forward hub, auth, audit ledger and entitlement gate between Solidus Analytics agents and the Solidus Cloud PWA.",
   "main": "src/server.js",
   "type": "commonjs",
@@ -11,10 +11,10 @@
     "entitle": "node src/cli.js entitle",
     "keys": "node src/cli.js keys",
     "smoke": "node test/smoke.js",
-    "test": "node test/smoke.js && node test/security.js"
+    "test": "node test/smoke.js && node test/security.js && node test/sqlite-store.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "ws": "^8.18.0"

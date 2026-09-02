@@ -341,8 +341,17 @@ Exactly the six catalog paths — the agent's `CommandSpec` registry binds each 
 - Commands received while the agent is offline are queued **only if** `expiresAt − now ≥
   30 s`; the queue is flushed in order on reconnect; anything expired by then returns
   `E_EXPIRED`. Queue cap: 64 per server (excess → `E_RATE`).
+- The queue, the 200-event ring buffers and the relay-side idempotency cache are
+  **durable** (v1.0.1, P2): they live in the relay's SQLite store (`relay.db`, WAL),
+  so they survive a relay restart. On boot, commands that were in flight when the
+  process died are closed with a `timeout`/`E_RESTART` audit row, queued commands
+  that expired during the downtime are closed as `E_EXPIRED`, and everything still
+  alive resumes — rings replay to clients, the queue flushes when the agent
+  reconnects.
 - Events are ring-buffered per server (last **200**), replayed to clients on
   connect/resync (§4.3). Buffer overflow discards oldest and bumps `droppedEvts`.
+  The ring also survives the agent's own disconnects (it is no longer tied to the
+  agent socket).
 
 ### 6.7 Command results to other clients
 
@@ -375,11 +384,15 @@ Risk classes are the catalog's R / W1 / W2 / D. The relay enforces; the agent re
 - Financial commands (`econ.grant`, `econ.deduct`, `econ.transfer`, `econ.grant.all`)
   **must** carry `idemKey` (client-generated, unique per logical operation, UUID-ish).
 - Relay: per-user × per-command cache, 10 min — duplicate submissions return the
-  original outcome with `duplicate:true` instead of forwarding.
+  original outcome with `duplicate:true` instead of forwarding. Since v1.0.1 (P2)
+  the cache is persisted in the relay's SQLite store, so a relay restart inside
+  the window replays the first result instead of re-forwarding. The terminal
+  result is written **before** its idem row: a crash between the two can only
+  re-forward (the agent dedupes), never fabricate a success that never happened.
 - Agent: persistent table `cloud_idempotency(idemKey TEXT PRIMARY KEY, cmd, ts,
   status, resultJson)` retained 48 h and vacuumed periodically; survives agent/server
   restarts. Duplicate → re-emit stored result (marked `duplicate:true`), **never
-  re-executes**.
+  re-executes**. This remains the authoritative last line of defense.
 - Non-financial commands may omit `idemKey`; retries are naturally safe (kick twice is
   idempotent-ish, pause is a state set).
 

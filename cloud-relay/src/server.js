@@ -18,24 +18,54 @@ const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
 const { config, COMMAND_META, RANK } = require('./config');
 const { Store } = require('./store');
+const { RelayDb } = require('./db');
 const { AlertEngine, pushReady } = require('./alerts');
 const { LoginLimiter } = require('./login-limiter');
 
 const store = new Store();
 const alerts = new AlertEngine(store);
 const loginLimiter = new LoginLimiter();
+const relayDb = new RelayDb(config.dbPath);
 
 // ---- live state -----------------------------------------------------------
 
-const agents = new Map();   // serverId -> { ws, caps, meta, lastSeen, ring:[], queue:[] }
+const agents = new Map();   // serverId -> { ws, caps, meta, lastSeen }
 const clients = new Map();  // ws -> { user, role, serverId, dev }
-const idemCache = new Map();      // `${userId}:${cmd}:${idemKey}` -> result
+const idemCache = new Map();      // `${userId}:${cmd}:${idemKey}` -> result (L1 over relayDb)
 const prepareTokens = new Map();  // token -> { userId, cmd, target, preparedAt }
 const rate = new Map();           // userId -> { financial:[], w2:[], w1:[], r:[], d:[], broadcast:[] }
 const pending = new Map();        // rid -> { ws (originator), userId }
 const wsTickets = new Map();      // ticket -> { sessionToken, userId, expiresAt }  (single-use, P1-5)
 
+// P2 durable rings: per-server event replay buffers, seeded from relay.db at
+// boot and kept in sync on every push. Independent of agent sockets, so the
+// ring now survives BOTH agent disconnects and relay restarts (§6.6).
+const rings = new Map();   // serverId -> [frames oldest..newest]
+for (const [sid, frames] of relayDb.loadRings(config.eventRing)) rings.set(sid, frames);
+
+// boot closure (P2): commands in flight when the previous process died get an
+// honest timeout + audit row instead of vanishing; queued commands that
+// expired during the downtime are closed as E_EXPIRED. Queued commands that
+// are still alive stay queued and flush when the agent reconnects.
+for (const ctx of relayDb.failInFlight()) {
+  store.audit({ kind: 'cmd', rid: ctx.rid, serverId: ctx.serverId, cmd: ctx.cmd,
+    target: ctx.target ?? '', actorId: ctx.userId ?? null,
+    actorName: ctx.actor?.name ?? null, actorRole: ctx.actor?.role ?? null,
+    status: 'timeout', code: 'E_RESTART', error: 'relay restarted while command was in flight',
+    receivedAt: Date.now(), idemKey: ctx.idemKey ?? null });
+}
+for (const ctx of relayDb.closeExpiredQueued()) {
+  store.audit({ kind: 'cmd', rid: ctx.rid, serverId: ctx.serverId, cmd: ctx.cmd,
+    target: ctx.target ?? '', actorId: ctx.userId ?? null,
+    actorName: ctx.actor?.name ?? null, actorRole: ctx.actor?.role ?? null,
+    status: 'rejected', code: 'E_EXPIRED', error: 'expired while relay was down',
+    receivedAt: Date.now(), idemKey: ctx.idemKey ?? null });
+}
+
 setInterval(() => store.pruneAudit(), 12 * 3600 * 1000).unref();
+setInterval(() => {
+  relayDb.pruneCommands(Date.now() - config.commandRetentionDays * 86400000);
+}, 12 * 3600 * 1000).unref();
 
 // ---------- helpers ---------------------------------------------------------
 
@@ -51,10 +81,14 @@ function agentOf(serverId) {
 }
 
 function ringPush(serverId, event) {
-  const a = agents.get(serverId);
-  if (!a) return;
-  a.ring.push(event);
-  if (a.ring.length > config.eventRing) a.ring.shift();
+  let ring = rings.get(serverId);
+  if (!ring) { ring = []; rings.set(serverId, ring); }
+  ring.push(event);
+  const overflowed = ring.length > config.eventRing;
+  if (overflowed) ring.shift();
+  // mirror to the durable store; trim only on overflow so the DELETE runs
+  // about once per event past the ring size, not once per event.
+  relayDb.appendEvent(serverId, event, config.eventRing, overflowed);
 }
 
 function broadcastToClients(serverId, frame, exceptWs) {
@@ -216,11 +250,17 @@ function handleClientCommand(ws, client, frame) {
     prepareTokens.delete(frame.confirm.token);
   }
 
-  // idempotency (G3)
+  // idempotency (G3) - L1 memory over the durable L2 relay.db rows, so a
+  // relay restart inside the 10 min window still replays the first result
+  // instead of re-forwarding money commands to the agent.
   if (meta.financial) {
     if (!frame.idemKey) return reject('E_ARGS', 'idemKey is mandatory for financial commands');
     const key = `${client.user.id}:${cmd}:${frame.idemKey}`;
-    const prior = idemCache.get(key);
+    let prior = idemCache.get(key);
+    if (!prior) {
+      prior = relayDb.idemGet(key);
+      if (prior) idemCache.set(key, prior);
+    }
     if (prior) {
       store.audit({
         kind: 'cmd', rid: frame.rid || frame.id, serverId, cmd, target: target ?? '',
@@ -247,37 +287,53 @@ function handleClientCommand(ws, client, frame) {
     idemKey: frame.idemKey || undefined,
     ts: nowMs(),
   };
+  // store&forward preconditions (§6.6), checked BEFORE any state is written
+  // so a rejection can never leave a zombie queued row in relay.db.
+  if (!agent) {
+    if (relayDb.queueCount(serverId) >= config.limits.commandQueue) {
+      return reject('E_RATE', 'offline command queue is full');
+    }
+    if (expiresAt - nowMs() < 30000) {
+      return reject('E_EXPIRED', 'TTL too short to queue while agent offline');
+    }
+  }
+
   store.audit({ kind: 'cmd', rid, serverId, cmd, target: target ?? '', reason: frame.reason || '',
     actorId: client.user.id, actorName: client.user.name, actorRole: client.role,
     status: agent ? 'sent' : 'queued', receivedAt: nowMs(), idemKey: frame.idemKey || null, args: frame.args || {} });
+  // P2 durable lifecycle: the row moves queued -> sent -> done and survives
+  // relay restarts; pending keeps the live originator socket only.
+  relayDb.insertCommand({ rid, serverId, userId: client.user.id, cmd, target: target ?? '',
+    actor: forward.actor, idemKey: frame.idemKey || null,
+    issuedAt: forward.issuedAt, expiresAt, state: agent ? 'sent' : 'queued', frame: forward });
   pending.set(rid, { ws, userId: client.user.id, serverId, cmd, target: target ?? '', actor: forward.actor, idemKey: frame.idemKey || null });
 
   if (agent) {
     agent.ws.send(j(forward));
     setTimeout(() => resolvePending(rid, 'timeout', null, 'no agent result within 120s'), 120000).unref();
   } else {
-    const q = agents.get(serverId)?.queue || [];
-    if (q.length >= config.limits.commandQueue) {
-      pending.delete(rid);
-      return reject('E_RATE', 'offline command queue is full');
-    }
-    if (expiresAt - nowMs() < 30000) {
-      pending.delete(rid);
-      return reject('E_EXPIRED', 'TTL too short to queue while agent offline');
-    }
-    q.push(forward);
-    agents.get(serverId).queue = q;
-    ws.send(j({ sv: 1, id: frame.id, t: 'evt', type: 'cmd.queued', d: { rid, cmd, queuePos: q.length } }));
+    // store&forward while offline (§6.6) - the queue IS relay.db now, so a
+    // relay crash between accept and flush no longer drops commands.
+    ws.send(j({ sv: 1, id: frame.id, t: 'evt', type: 'cmd.queued', d: { rid, cmd, queuePos: relayDb.queueCount(serverId) } }));
   }
 }
 
 function resolvePending(rid, status, code, error, data, tookMs) {
-  const p = pending.get(rid);
+  // live pending first; after a relay restart the originator socket is gone
+  // but the durable row still carries the context needed for audit + cmd.audit.
+  const p = pending.get(rid) || relayDb.commandContext(rid);
   if (!p) return;
   pending.delete(rid);
-  // relay-side idempotency cache for financial commands (G3)
+  relayDb.finishCommand(rid, { status, code: code || null, error: error || null, data: data || null });
+  // relay-side idempotency cache for financial commands (G3). Written AFTER
+  // the terminal result: a crash between the two re-forwards on retry, and
+  // the agent's 48 h cloud_idempotency table remains the last line of defense
+  // (§8) - never a false "applied" for a command that never executed.
   if (p.idemKey) {
-    idemCache.set(`${p.userId}:${p.cmd}:${p.idemKey}`, { status, code, error, d: data || {}, at: nowMs() });
+    const key = `${p.userId}:${p.cmd}:${p.idemKey}`;
+    const rec = { status, code, error, d: data || {}, at: nowMs() };
+    idemCache.set(key, rec);
+    relayDb.idemSet(key, rec);
   }
   const result = {
     sv: 1, id: 'r-' + rid, t: 'evt', type: 'cmd.result', ts: nowMs(),
@@ -368,23 +424,25 @@ function setupAgentSocket(wss) {
         serverId = msg.serverId;
         const prev = agents.get(serverId);
         if (prev && prev.ws !== ws) { try { prev.ws.terminate(); } catch {} }
-        agents.set(serverId, {
-          ws, caps: msg.caps || [], meta: msg, lastSeen: nowMs(),
-          ring: prev?.ring || [], queue: prev?.queue || [],
-        });
+        agents.set(serverId, { ws, caps: msg.caps || [], meta: msg, lastSeen: nowMs() });
         ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'hello.ok', d: { sessionId: newId('s'), relayTs: nowMs(), protoMin: config.protoMin } }));
-        // flush queued commands (§6.6)
-        const a = agents.get(serverId);
-        for (const q of a.queue.splice(0)) {
-          if (q.expiresAt > nowMs()) ws.send(j(q));
-          else resolvePending(q.rid, 'rejected', 'E_EXPIRED', 'expired while agent offline');
+        // flush queued commands (§6.6) - the durable relay.db queue, so the
+        // flush also delivers commands queued before a relay restart.
+        for (const q of relayDb.queuedCommands(serverId)) {
+          if (q.expiresAt > nowMs()) {
+            relayDb.markSent(q.rid);
+            ws.send(j(q.frame));
+            setTimeout(() => resolvePending(q.rid, 'timeout', null, 'no agent result within 120s'), 120000).unref();
+          } else {
+            resolvePending(q.rid, 'rejected', 'E_EXPIRED', 'expired while agent offline');
+          }
         }
         store.audit({ kind: 'agent', serverId, status: 'online', agent: msg.agent, mc: msg.mc, modsHash: msg.modsHash });
         broadcastToClients(serverId, { sv: 1, id: newId('m'), t: 'evt', type: 'agent.status', d: { online: true, agent: msg.agent, mc: msg.mc, caps: msg.caps } });
         // replay ring to attached clients
         for (const [cws, c] of clients) {
           if (c.serverId === serverId && cws.readyState === 1) {
-            for (const ev of a.ring) cws.send(j(ev));
+            for (const ev of rings.get(serverId) || []) cws.send(j(ev));
           }
         }
         return;
@@ -459,10 +517,7 @@ function setupClientSocket(wss) {
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       if (msg.t === 'evt' && msg.type === 'select') {
         client.serverId = msg.d?.serverId;
-        const a = agents.get(client.serverId);
-        if (a && a.ws.readyState === 1) {
-          for (const ev of a.ring) ws.send(j(ev));
-        }
+        for (const ev of rings.get(client.serverId) || []) ws.send(j(ev));
         return;
       }
       if (msg.t === 'evt' && msg.type === 'prepare') {
@@ -593,22 +648,30 @@ httpServer.on('upgrade', (req, socket, head) => {
 setupAgentSocket(agentWss);
 setupClientSocket(clientWss);
 
-// prune stale idem cache + expired ws tickets
+// prune stale idem cache + expired ws tickets (+ durable idem rows, P2)
 setInterval(() => {
   const cutoff = nowMs() - config.idemCacheMs;
   for (const [k, v] of idemCache) if (v.at < cutoff) idemCache.delete(k);
+  relayDb.idemPrune(cutoff);
   for (const [k, v] of prepareTokens) if (v.validUntil < nowMs()) prepareTokens.delete(k);
   for (const [k, v] of wsTickets) if (v.expiresAt < nowMs()) wsTickets.delete(k);
 }, 60000).unref();
 
 httpServer.listen(config.port, config.host, () => {
   const scheme = config.allowInsecure ? 'ws' : 'wss';
-  console.log(`Solidus Cloud Relay v0.1.0 listening on ${scheme}://${config.host}:${config.port}`);
+  const s = relayDb.stats();
+  console.log(`Solidus Cloud Relay v0.2.0 listening on ${scheme}://${config.host}:${config.port}`);
   console.log(`  agent endpoint : ${scheme}://<host>:${config.port}/agent`);
   console.log(`  client endpoint: ${scheme}://<host>:${config.port}/app   (PWA at /)`);
   console.log(`  data dir       : ${config.dataDir}`);
+  console.log(`  sqlite store   : ${config.dbPath} (events=${s.events}, commands=${s.commands}, idem=${s.idem})`);
   console.log(`  web push       : ${pushReady ? 'READY' : 'disabled (set VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY or run npm run keys)'}`);
   if (store.users.users.length === 0) {
     console.log('  NOTE: no users yet - create the owner with: npm run user -- --name <you> --password <pass>');
   }
 });
+
+// durable store is WAL + synchronous=NORMAL, so a crash loses at most the
+// last commits - still, close cleanly when we can.
+process.once('SIGTERM', () => { try { relayDb.close(); } catch {} process.exit(0); });
+process.once('SIGINT', () => { try { relayDb.close(); } catch {} process.exit(0); });
