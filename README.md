@@ -1,5 +1,6 @@
 # Solidus Analytics — Server-Side Minecraft Fabric Mod
 
+[![Solidus Family](https://img.shields.io/badge/Solidus_Family-2.1.0-8B5CF6.svg)](VERSIONING.md)
 [![Platform](https://img.shields.io/badge/Platform-Fabric-blue.svg)](https://fabricmc.net/)
 [![Minecraft](https://img.shields.io/badge/Minecraft-26.1.x-green.svg)](https://www.minecraft.net/)
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://adoptium.net/)

@@ -22,6 +22,6 @@
     "fabric-api": ">=0.155.2+26.1.2"
   },
   "suggests": {
-    "solidus": "*"
+    "solidus": ">=2.1.0"
   }
 }

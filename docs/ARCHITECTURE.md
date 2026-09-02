@@ -1,6 +1,6 @@
 # Solidus-Analytics Architecture Documentation
 
-> **Version**: 1.1.0 | **Minecraft**: 26.1.2 | **Fabric**: 0.19.4+ | **Java**: 25  
+> **Version**: 2.1.0 | **Minecraft**: 26.1.2 | **Fabric**: 0.19.4+ | **Java**: 25  
 > **License**: MIT | **Environment**: 100% Server-Side Only
 
 ---

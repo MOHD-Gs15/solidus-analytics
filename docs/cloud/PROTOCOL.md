@@ -204,7 +204,7 @@ Every frame (either direction, both sockets) is a single JSON object:
 | `health.disk` | 60 s | `{ worldsB: 52884, logsB: 912, economyDbB: 143, auctionsDbB: 57, analyticsDbB: 96, walB: 2, freeB: 22010 }` |
 | `health.world` | 60 s | `{ levels: [ { name:"minecraft:overworld", chunks: 8421, entities: 1042, diskB: 28112 } ] }` |
 | `health.entities` | 60 s | `{ top: [ { type:"minecraft:item", count: 611 }, … ] }` |
-| `health.meta` | on hello + hourly + on change | `{ agent:"1.2.0", mc:"26.1.2", loader:"0.19.4", java:"25", core:"2.1.0", governance:false, uptimeS: 3600, modsHash:"sha256:…", droppedEvts: 0, playersMax: 40 }` |
+| `health.meta` | on hello + hourly + on change | `{ agent:"2.1.0", mc:"26.1.2", loader:"0.19.4", java:"25", core:"2.1.0", governance:false, uptimeS: 3600, modsHash:"sha256:…", droppedEvts: 0, playersMax: 40 }` |
 | `health.lag_spike` | on trigger | `{ run: 4, ms: 812, tps1: 14.1, at: 1725170100000 }` — ≥ 3 consecutive ticks > 75 ms |
 | `players.list` | 10 s full snapshot (join/leave are separate instant events) | `{ full:true, max:40, players:[ { n, uuid, ping: 41, level:"overworld", mode:"survival", sessS: 1800, balC: null\|int } ] }` — `balC` present only when Core API available |
 | `player.join` | event | `{ n, uuid, ip, first: false }` |
