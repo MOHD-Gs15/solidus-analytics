@@ -20,11 +20,17 @@ switch (cmd) {
   case 'user': {
     if (!args.name || !args.password) fail('usage: npm run user -- --name <you> --password <pass> [--role owner]');
     if (store.findUser(args.name)) fail(`user "${args.name}" already exists`);
+    // audit C-4: an arbitrary --role string (e.g. "Admin") used to be stored
+    // verbatim; the relay's RANK lookup then failed open and the account
+    // passed every gate. Roles are a closed set.
+    const ROLES = ['viewer', 'mod', 'admin', 'owner'];
+    const role = args.role || (store.users.users.length === 0 ? 'owner' : 'viewer');
+    if (!ROLES.includes(role)) fail(`invalid --role "${role}" (allowed: ${ROLES.join(', ')})`);
     const { salt, hash } = store.hashPassword(args.password);
     store.users.users.push({
       id: 'u-' + crypto.randomUUID().slice(0, 8),
       name: args.name, salt, hash,
-      role: args.role || (store.users.users.length === 0 ? 'owner' : 'viewer'),
+      role,
       created: Date.now(),
     });
     store.saveUsers();

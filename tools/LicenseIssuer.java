@@ -11,10 +11,12 @@ import java.util.Base64;
 /**
  * Solidus SA2 license issuer (Ed25519).
  *
- * <p>This tool is the ONLY place where the signing private key is ever used.
- * Run it on a trusted, offline-capable machine - never on customer servers.
- * Customer servers receive only the PUBLIC key (via SOLIDUS_LICENSE_PUBLIC_KEY)
- * and can verify licenses but can never mint them.</p>
+ * <p>DEPRECATED - use {@code tools/license/SolidusLicenseTool.java} instead.
+ * This legacy tool emits the retired 4-field dash-format keys and documents the
+ * pre-embedded-key distribution flow (shipping the public key to customer
+ * servers via SOLIDUS_LICENSE_PUBLIC_KEY). Since audit round 2 the verifier
+ * embeds the vendor public key in the JAR and IGNORES that env var, so keys
+ * issued here fail verification. It is kept only as a historical reference.</p>
  *
  * <p>Replaces the previous HMAC-based SA1 scheme: SA1 required the signing
  * secret on the customer's own server, which made every sale a master-key

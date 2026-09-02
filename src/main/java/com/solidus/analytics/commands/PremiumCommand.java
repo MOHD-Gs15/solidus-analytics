@@ -163,6 +163,13 @@ public class PremiumCommand {
 
     private static int executeWeeklyReport(CommandContext<CommandSourceStack> context, AnalyticsEngine engine) {
         CommandSourceStack source = (CommandSourceStack)context.getSource();
+        // D-3 fix: weekly reports are a premium feature (ARCHITECTURE §10.4).
+        // The gate lives here AND in the constructor (generator is null without
+        // a license) so neither the command nor the scheduler path can reach it.
+        if (!engine.isPremiumEnabled()) {
+            PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Weekly reports are a premium feature and require a valid license.", ChatFormatting.RED));
+            return 0;
+        }
         WeeklyReportGenerator reportGen = engine.getWeeklyReportGenerator();
         if (reportGen == null) {
             PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Weekly report generator not available.", ChatFormatting.RED));
@@ -192,6 +199,9 @@ public class PremiumCommand {
             PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  License verifier not loaded.", ChatFormatting.RED));
             PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Premium features are disabled.", ChatFormatting.GRAY));
         } else {
+            // D-8 fix: LICENSE-SYSTEM.md §4 tells buyers they can re-verify by
+            // running /analytics license after pasting a new key - actually do it.
+            verifier.forceReverify();
             LicenseVerifier.VerificationState state = verifier.getState();
             ChatFormatting stateColor = switch (state) {
                 case LicenseVerifier.VerificationState.VERIFIED -> ChatFormatting.GREEN;
@@ -206,9 +216,13 @@ public class PremiumCommand {
             }
             if (verifier.getExpiryDate() != null) {
                 LocalDate expiry = verifier.getExpiryDate();
-                long daysLeft = ChronoUnit.DAYS.between(LocalDate.now(), expiry);
-                ChatFormatting expiryColor = daysLeft > 30L ? ChatFormatting.GREEN : (daysLeft > 7L ? ChatFormatting.YELLOW : ChatFormatting.RED);
-                PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Expires: ", ChatFormatting.GRAY).append((Component)PremiumCommand.styled(expiry.format(DateTimeFormatter.ISO_LOCAL_DATE), ChatFormatting.WHITE)).append((Component)PremiumCommand.styled(" (" + daysLeft + " days remaining)", expiryColor)));
+                long daysLeft = ChronoUnit.DAYS.between(LocalDate.now(java.time.ZoneOffset.UTC), expiry);
+                if (verifier.isPerpetual()) {
+                    PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Expires: never (perpetual)", ChatFormatting.WHITE));
+                } else {
+                    ChatFormatting expiryColor = daysLeft > 30L ? ChatFormatting.GREEN : (daysLeft > 7L ? ChatFormatting.YELLOW : ChatFormatting.RED);
+                    PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Expires: ", ChatFormatting.GRAY).append((Component)PremiumCommand.styled(expiry.format(DateTimeFormatter.ISO_LOCAL_DATE), ChatFormatting.WHITE)).append((Component)PremiumCommand.styled(" (" + daysLeft + " days remaining)", expiryColor)));
+                }
             }
             if (verifier.getFingerprint() != null) {
                 String fp = verifier.getFingerprint();
@@ -272,6 +286,11 @@ public class PremiumCommand {
         }
         String result = dm.setupEncryption(password);
         PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  " + result, ChatFormatting.GREEN));
+        // D-5: vanilla dedicated servers log every issued command to logs/latest.log -
+        // warn the operator that this password is now in that file and point at the
+        // one-shot file variant (R09) that keeps the secret out of the command line.
+        PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  NOTE: the command line (including this password) is recorded in server logs.", ChatFormatting.YELLOW));
+        PremiumCommand.sendFeedback(source, (Component)PremiumCommand.styled("  Prefer: /analytics dashboard setupfile <path> (file is deleted after use), then rotate the password if this server's logs are shared.", ChatFormatting.GRAY));
         return 1;
     }
 

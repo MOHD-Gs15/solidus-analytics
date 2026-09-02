@@ -119,6 +119,10 @@ public class DashboardManager {
         if (this.webServerEnabled) {
             try {
                 this.webServer = new AnalyticsWebServer(this.engine, webPort, webPassword);
+                // A-1 fix: wire the web-side legacy-hash migration (the R19
+                // vault migration existed, but the web credential had none -
+                // legacy installs stayed on single-iteration SHA-256 forever).
+                this.webServer.setLegacyWebAuthMigration(this::migrateWebLegacyHashIfAny);
                 this.webServer.start();
             }
             catch (IOException e) {
@@ -154,8 +158,17 @@ public class DashboardManager {
     public String setupEncryption(String password) {
         String hash = this.encryption.setupPassword(password.toCharArray());
         this.dashboardProps.setProperty("encryption.password_hash", hash);
+        // A-2 fix: the documented flow (README "Set dashboard/encryption password")
+        // is the ONLY credential-writing command - provisioning the web Basic-auth
+        // credential here makes the web server actually enableable as documented,
+        // instead of forcing operators to hand-copy the vault hash into
+        // webserver.password_hash (or hand-roll a legacy-format hash).
+        this.dashboardProps.setProperty("webserver.password_hash", hash);
         this.saveConfig();
-        return "Dashboard encryption set up successfully. Your data will be encrypted before publishing.";
+        if (this.webServer != null) {
+            this.webServer.updatePasswordHash(hash);
+        }
+        return "Dashboard encryption set up successfully. Your data will be encrypted before publishing. The web dashboard (if enabled) uses the same password.";
     }
 
     public String unlockEncryption(String password) {
@@ -229,6 +242,24 @@ public class DashboardManager {
         this.saveConfig();
         SolidusAnalyticsMod.LOGGER.info(
             "Dashboard password hash migrated from legacy SHA-256 to PBKDF2 (210k iterations).");
+    }
+
+    /** A-1 fix: the web Basic-auth credential gets the SAME legacy->PBKDF2
+     *  migration the vault hash has always had (R19 was never wired to
+     *  webserver.password_hash, leaving legacy installs GPU-crackable). */
+    private void migrateWebLegacyHashIfAny(String provenPassword) {
+        String storedHash = this.dashboardProps.getProperty("webserver.password_hash", "");
+        if (!DashboardEncryption.isLegacyHash(storedHash)) {
+            return;
+        }
+        String upgraded = DashboardEncryption.hashPassword(provenPassword.toCharArray());
+        this.dashboardProps.setProperty("webserver.password_hash", upgraded);
+        this.saveConfig();
+        if (this.webServer != null) {
+            this.webServer.updatePasswordHash(upgraded);
+        }
+        SolidusAnalyticsMod.LOGGER.info(
+            "Dashboard WEB password hash migrated from legacy SHA-256 to PBKDF2 (210k iterations).");
     }
 
     public String setupGitHub(String owner, String repo) {

@@ -112,6 +112,14 @@ function rateOf(userId) {
   return rate.get(userId);
 }
 
+/** audit C-1: the servers a user owns (owners read the whole ledger). */
+function ownedServerIds(client) {
+  if (client.role === 'owner') return null;   // null = no filter
+  return store.servers.servers
+    .filter((s) => s.userId === client.user.id)
+    .map((s) => s.serverId);
+}
+
 // ---------- security headers (audit P0-1) ------------------------------------
 
 // Same hardening the local dashboard already ships, applied to every relay
@@ -167,6 +175,19 @@ function limitFor(meta, cmd) {
   }
 }
 
+// relay-side command role floors (audit C-1). PROTOCOL §10/§15: viewer = no
+// commands, audit.query = admin, audit.export/session.*/alert.* = owner.
+const RELAY_CMD_ROLES = {
+  'audit.query': 'admin',
+  'audit.export': 'owner',
+  'session.list': 'owner',
+  'session.revoke': 'owner',
+  'alert.silence': 'owner',
+  'alert.rule.templates': 'owner',
+  'alert.rule.manage': 'owner',
+  'alert.channel.test': 'owner',
+};
+
 // ---------- command validation + dispatch (§6) ------------------------------
 
 function rejectResult(frame, status, code, error, data) {
@@ -196,10 +217,27 @@ function handleClientCommand(ws, client, frame) {
     ws.send(j(rejectResult(frame, 'rejected', code, error, data)));
   };
 
-  // relay-side commands never reach the agent (§15 alerts & audit domain)
-  if (COMMAND_META.relaySide.includes(cmd)) return relaySideCommand(ws, client, frame);
+  // relay-side commands never reach the agent (§15 alerts & audit domain),
+  // but they are still role-gated (audit C-1: this used to dispatch BEFORE the
+  // only RANK check in the file, handing viewer accounts owner-grade
+  // audit.export / alert-rule powers) and rate-limited like every command (G4).
+  if (COMMAND_META.relaySide.includes(cmd)) {
+    const minRole = RELAY_CMD_ROLES[cmd] || 'owner';
+    if (RANK[client.role] === undefined || RANK[client.role] < RANK[minRole]) {
+      return reject('E_ROLE', `relay-side command requires ${minRole}`);
+    }
+    const lim = limitFor({ risk: 'R' }, cmd);
+    if (!pushRate(rateOf(client.user.id)[lim.list], lim.max)) {
+      return reject('E_RATE', 'rate ceiling exceeded', { retryAfterMs: 30000 });
+    }
+    return relaySideCommand(ws, client, frame);
+  }
 
   if (!meta) return reject('E_UNKNOWN_CMD', 'command id is not in the catalog allow-list');
+  // C-4: fail CLOSED on non-canonical role strings - RANK['Admin'] is
+  // undefined and `undefined < x` is always false, so a hand-created user
+  // with a mangled role used to pass EVERY gate including D-class.
+  if (RANK[client.role] === undefined) return reject('E_ROLE', 'unknown role for this account');
   if (RANK[client.role] < RANK[meta.role]) return reject('E_ROLE', 'role below minRole');
   if (!rec || rec.userId !== client.user.id) return reject('E_UNKNOWN_SERVER', 'server not paired to your account');
   if (!store.entitled(serverId)) return reject('E_ENTITLEMENT', 'subscription inactive - command channel closed');
@@ -219,9 +257,12 @@ function handleClientCommand(ws, client, frame) {
     return reject('E_ARGS', 'issuedAt skews more than 300s from relay time');
   }
 
-  // TTL (§3)
+  // TTL (§3) - audit C-5: expiresAt is CLAMPED to issuedAt + class TTL, not
+  // merely checked as a floor. A forged far-future expiresAt used to let a
+  // queued command survive indefinitely and execute long after issuance.
   const ttl = meta.risk === 'D' ? 90000 : config.commandTtlMs;
-  const expiresAt = frame.expiresAt || (frame.issuedAt || nowMs()) + ttl;
+  const issuedBase = frame.issuedAt || nowMs();
+  const expiresAt = Math.min(frame.expiresAt || issuedBase + ttl, issuedBase + ttl);
   if (expiresAt < nowMs()) return reject('E_EXPIRED', 'command TTL exceeded');
 
   // reason + typed-name confirmation for W2/D (G2)
@@ -349,11 +390,18 @@ function resolvePending(rid, status, code, error, data, tookMs) {
 
 function relaySideCommand(ws, client, frame) {
   const { cmd, args } = frame;
-  const done = (status, data, code) => ws.send(j({
-    sv: 1, id: frame.id, t: 'evt', type: 'cmd.result', ts: nowMs(),
-    d: { rid: frame.rid || frame.id, cmd, target: frame.target ?? null, actor: { name: client.user.name, role: client.role }, status, code: code || null, data: data || null, tookMs: 0 },
-  }));
-  store.audit({ kind: 'cmd', serverId: client.serverId, cmd, target: frame.target ?? '', actorName: client.user.name, actorRole: client.role, status: 'applied', receivedAt: nowMs() });
+  // audit C-1: the audit row now records the REAL outcome and actor identity
+  // (it used to claim status 'applied' before the switch even ran, including
+  // for rejected commands).
+  const done = (status, data, code) => {
+    ws.send(j({
+      sv: 1, id: frame.id, t: 'evt', type: 'cmd.result', ts: nowMs(),
+      d: { rid: frame.rid || frame.id, cmd, target: frame.target ?? null, actor: { name: client.user.name, role: client.role }, status, code: code || null, data: data || null, tookMs: 0 },
+    }));
+    store.audit({ kind: 'cmd', serverId: client.serverId ?? null, cmd, target: String(frame.target ?? '').slice(0, 64),
+      actorId: client.user.id, actorName: client.user.name, actorRole: client.role,
+      status, code: code || null, receivedAt: nowMs(), idemKey: frame.idemKey || null });
+  };
   switch (cmd) {
     case 'session.list':
       return done('applied', { sessions: store.users.sessions.filter((s) => s.userId === client.user.id).map((s) => ({ dev: s.dev, lastSeen: s.lastSeen, expiresAt: s.expiresAt })) });
@@ -362,9 +410,12 @@ function relaySideCommand(ws, client, frame) {
       return done('applied', { revoked: n });
     }
     case 'audit.query':
-      return done('applied', { rows: store.auditQuery({ ...args, limit: args?.limit || 100 }) });
+      // audit C-1: rows are scoped to the caller's own servers (owners see
+      // everything; the ledger previously leaked cross-tenant command history
+      // to any admin, and - pre-C-1 - to ANY viewer).
+      return done('applied', { rows: store.auditQuery({ ...args, limit: args?.limit || 100, serverIds: ownedServerIds(client) }) });
     case 'audit.export':
-      return done('applied', { format: args?.format || 'json', rows: store.auditQuery({ ...args, limit: 2000 }) });
+      return done('applied', { format: args?.format || 'json', rows: store.auditQuery({ ...args, limit: 2000, serverIds: ownedServerIds(client) }) });
     case 'alert.silence': {
       store.alerts.silenceUntil = nowMs() + Math.min(1440, Math.max(5, args?.minutes || 30)) * 60000;
       store.saveAlerts();
@@ -389,7 +440,12 @@ function relaySideCommand(ws, client, frame) {
       }
       if (args?.action === 'update' && args.rule?.id) {
         const r = store.alerts.rules.find((x) => x.id === args.rule.id);
-        if (r) Object.assign(r, args.rule, { id: r.id });
+        if (!r) return done('rejected', null, 'E_ARGS');
+        // audit C-1: §13 says the heartbeat rule is "built-in, non-deletable";
+        // the delete branch protected it, the update branch did not - any user
+        // could muzzle the one alert that watches agent liveness.
+        if (r.builtin) return done('rejected', null, 'E_ARGS');
+        Object.assign(r, args.rule, { id: r.id });
         store.saveAlerts();
         return done('applied', { rule: r });
       }
@@ -411,13 +467,24 @@ function relaySideCommand(ws, client, frame) {
 function setupAgentSocket(wss) {
   wss.on('connection', (ws) => {
     let serverId = null;
+    // audit C-6: an unauthenticated /agent socket that never sends hello must
+    // not pin resources - close it after 10 s.
+    const helloTimer = setTimeout(() => { if (!serverId) { try { ws.close(4001, 'no hello'); } catch {} } }, 10000);
+    helloTimer.unref?.();
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return ws.close(4000, 'bad json'); }
       if (msg.t === 'evt' && msg.type === 'hello') {
-        const rec = store.verifyPairing(msg.serverId, msg.secret);
+        const rec = store.verifyPairing(String(msg.serverId || '').slice(0, 64), String(msg.secret || '').slice(0, 256));
         if (!rec) {
-          store.audit({ kind: 'auth', serverId: msg.serverId, status: 'rejected', code: 'E_AUTH' });
+          // audit C-7: failed hellos are attacker-controlled and were written
+          // to the 90-day ledger verbatim (disk exhaustion + forensic noise).
+          // Truncate the row and throttle per source IP.
+          const peer = ws._socket ? ws._socket.remoteAddress || 'unknown' : 'unknown';
+          const key = 'hello:' + peer;
+          const bucket = (rate.set(key, rate.get(key) || []));
+          if (!pushRate(bucket, 10, 60000)) { try { ws.close(4001, 'throttled'); } catch {} return; }
+          store.audit({ kind: 'auth', serverId: String(msg.serverId || '').slice(0, 64), status: 'rejected', code: 'E_AUTH' });
           ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'hello.err', d: { code: 'E_AUTH' } }));
           return ws.close(4001, 'auth');
         }
@@ -502,6 +569,7 @@ function setupClientSocket(wss) {
     if (!found) { ws.close(4001, 'auth'); return; }
     const client = {
       user: found.user, role: found.user.role, serverId: null, dev: found.session.dev,
+      sessionToken: found.session.token,  // audit C-3: live sockets are re-validated
     };
     clients.set(ws, client);
     const servers = store.servers.servers
@@ -516,7 +584,16 @@ function setupClientSocket(wss) {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       if (msg.t === 'evt' && msg.type === 'select') {
-        client.serverId = msg.d?.serverId;
+        // audit C-2: validate OWNERSHIP before subscribing. The command path
+        // already checked rec.userId === client.user.id; the read path did
+        // not, leaking another tenant's ring replay, live telemetry and
+        // cmd.audit frames to any authenticated user.
+        const wantId = msg.d?.serverId;
+        const rec = store.findServer(String(wantId || ''));
+        if (!wantId || !rec || rec.userId !== client.user.id) {
+          return ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'select.err', d: { code: 'E_UNKNOWN_SERVER' } }));
+        }
+        client.serverId = wantId;
         for (const ev of rings.get(client.serverId) || []) ws.send(j(ev));
         return;
       }
@@ -568,7 +645,13 @@ const httpServer = http.createServer(async (req, res) => {
         return res.end(j({ error: 'too many failed attempts' }));
       }
       const user = store.findUser(String(name || ''));
-      if (!user || !store.verifyPassword(user, password)) {
+      // audit C-10: unknown usernames skip scrypt entirely, answering ~30-60ms
+      // faster than existing ones - a username-enumeration oracle despite the
+      // identical 401 bodies. Run a DUMMY scrypt against a fixed record so the
+      // unknown-user path costs the same as a real verification.
+      const DUMMY_VERIFY = { salt: 'deadbeefdeadbeefdeadbeefdeadbeef', hash: '00'.repeat(32) };
+      const ok = user ? store.verifyPassword(user, password) : (store.verifyPassword(DUMMY_VERIFY, password), false);
+      if (!ok) {
         loginLimiter.recordFailure(ip, name);
         store.audit({ kind: 'auth', actorName: name, status: 'rejected' });
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -614,15 +697,30 @@ const httpServer = http.createServer(async (req, res) => {
       const { serverId, subscription } = await readBody(req);
       const rec = store.findServer(String(serverId || ''));
       if (!rec || rec.userId !== found.user.id || !subscription?.endpoint) { res.writeHead(400); return res.end(j({ error: 'bad subscription' })); }
+      // audit C-8: the relay POSTs alert pushes to whatever endpoint is stored
+      // here - a wholesale client-controlled URL was a ready-made SSRF vector
+      // (http://169.254.169.254/... and friends). Accept only https push
+      // endpoints on real hostnames, no userinfo, default port, bounded size.
+      let ep;
+      try { ep = new URL(String(subscription.endpoint)); } catch { ep = null; }
+      const isIpLiteral = ep && (/^\d+\.\d+\.\d+\.\d+$/.test(ep.hostname) || ep.hostname.includes(':'));
+      if (!ep || ep.protocol !== 'https:' || !ep.hostname || isIpLiteral || ep.username || ep.password
+          || String(subscription.endpoint).length > 512) {
+        res.writeHead(400);
+        return res.end(j({ error: 'endpoint must be an https push-service URL' }));
+      }
       rec.pushSubs = (rec.pushSubs || []).filter((s) => s.endpoint !== subscription.endpoint);
-      rec.pushSubs.push(subscription);
+      if (rec.pushSubs.length >= 10) rec.pushSubs.shift();  // bound the list
+      rec.pushSubs.push({ endpoint: subscription.endpoint, keys: subscription.keys || {} });
       store.saveServers();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(j({ subscribed: true }));
     }
     // static PWA
     let p = path.normalize(path.join(config.publicDir, url.pathname === '/' ? 'index.html' : url.pathname));
-    if (!p.startsWith(config.publicDir)) { res.writeHead(403); return res.end(); }
+    // audit C-12: the prefix check missed the path-separator boundary - a
+    // sibling directory like /public-evil/ also "starts with" the public dir.
+    if (p !== config.publicDir && !p.startsWith(config.publicDir + path.sep)) { res.writeHead(403); return res.end(); }
     fs.readFile(p, (err, data) => {
       if (err) { res.writeHead(404); return res.end('not found'); }
       res.writeHead(200, { 'Content-Type': MIME[path.extname(p)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
@@ -637,8 +735,10 @@ const httpServer = http.createServer(async (req, res) => {
 
 // ---------- boot ----------------------------------------------------------------
 
-const agentWss = new WebSocketServer({ noServer: true });
-const clientWss = new WebSocketServer({ noServer: true });
+// audit C-6: ws defaults allow 100 MiB frames, bufferable PRE-auth on /agent
+// (unauthenticated OOM). 256 KiB is ~1000x the largest legitimate envelope.
+const agentWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
+const clientWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 httpServer.on('upgrade', (req, socket, head) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   if (pathname === '/agent') agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit('connection', ws, req));
@@ -647,6 +747,20 @@ httpServer.on('upgrade', (req, socket, head) => {
 });
 setupAgentSocket(agentWss);
 setupClientSocket(clientWss);
+
+// audit C-3: revocation/expiry must reach LIVE sockets too. session.revoke
+// used to only kill future logins - a stolen-token /app connection kept its
+// role and could keep issuing econ.grant / server.stop indefinitely.
+setInterval(() => {
+  for (const [ws, c] of clients) {
+    if (ws.readyState !== 1) continue;
+    const found = store.findUserByToken(c.sessionToken);
+    if (!found || found.user.id !== c.user.id || found.user.role !== c.role) {
+      try { ws.close(4001, 'session revoked or expired'); } catch {}
+      clients.delete(ws);
+    }
+  }
+}, Number(process.env.RELAY_SESSION_SWEEP_MS ?? 30000)).unref();
 
 // prune stale idem cache + expired ws tickets (+ durable idem rows, P2)
 setInterval(() => {
@@ -658,11 +772,20 @@ setInterval(() => {
 }, 60000).unref();
 
 httpServer.listen(config.port, config.host, () => {
-  const scheme = config.allowInsecure ? 'ws' : 'wss';
   const s = relayDb.stats();
-  console.log(`Solidus Cloud Relay v0.2.0 listening on ${scheme}://${config.host}:${config.port}`);
-  console.log(`  agent endpoint : ${scheme}://<host>:${config.port}/agent`);
-  console.log(`  client endpoint: ${scheme}://<host>:${config.port}/app   (PWA at /)`);
+  // audit C-9: this process NEVER terminates TLS - the scheme in the old log
+  // line was fiction (allowInsecure only flipped the printed string). Say the
+  // truth: plain ws/http on this port, TLS MUST come from a reverse proxy.
+  if (!config.allowInsecure) {
+    console.log('SECURITY: this relay speaks PLAIN http/ws. Front it with a TLS-terminating');
+    console.log('SECURITY: reverse proxy (Caddy/nginx) before exposing it - see PROTOCOL.md §1.');
+    console.log('SECURITY: set RELAY_ALLOW_INSECURE=true to acknowledge and silence this notice.');
+  } else {
+    console.log('SECURITY: RELAY_ALLOW_INSECURE acknowledged (local reverse proxy assumed).');
+  }
+  console.log(`Solidus Cloud Relay v0.2.0 listening on ws://${config.host}:${config.port} (TLS offloaded upstream)`);
+  console.log(`  agent endpoint : ws://<host>:${config.port}/agent`);
+  console.log(`  client endpoint: ws://<host>:${config.port}/app   (PWA at /)`);
   console.log(`  data dir       : ${config.dataDir}`);
   console.log(`  sqlite store   : ${config.dbPath} (events=${s.events}, commands=${s.commands}, idem=${s.idem})`);
   console.log(`  web push       : ${pushReady ? 'READY' : 'disabled (set VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY or run npm run keys)'}`);

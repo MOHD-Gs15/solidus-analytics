@@ -81,6 +81,11 @@ class AlertEngine {
 
   fire(serverId, rule, st, reason) {
     const now = Date.now();
+    // audit C-11: the global maintenance window set by alert.silence was
+    // written to the store but never read - the command was a no-op that the
+    // UI happily reported as applied (§13: suppression, not deletion).
+    const silencedUntil = this.store.alerts.silenceUntil || 0;
+    if (silencedUntil > now) return;
     if (st.firedAt && now - st.firedAt < (rule.silenceMin || 0) * 60000) return;
     st.firedAt = now;
     const payload = { serverId, code: rule.metric === 'heartbeat' ? 'agent.heartbeat.lost' : 'alert.' + rule.metric, reason, ts: now };

@@ -290,17 +290,44 @@ public final class TelemetryCollector {
             java.net.SocketAddress addr = player.connection.getRemoteAddress();
             if (addr instanceof java.net.InetSocketAddress inet) {
                 String host = inet.getAddress() == null ? inet.getHostString() : inet.getAddress().getHostAddress();
-                String[] parts = host.split("\\.");
-                if (parts.length == 4) {
-                    return parts[0] + "." + parts[1] + "." + parts[2] + ".*";
-                }
-                return host;
+                return maskIp(host);
             }
         }
         catch (Throwable t) {
             // ignore
         }
         return null;
+    }
+
+    /**
+     * G6 masking for both address families (audit B-7). IPv4 keeps the first
+     * three octets; IPv6 zeroes the low 64 bits (the interface identifier)
+     * - Java's getHostAddress always returns the full uncompressed 8-group
+     * form, so splitting on ':' is exact. Anything unparseable is fully
+     * masked rather than leaked verbatim.
+     */
+    static String maskIp(String host) {
+        if (host == null || host.isEmpty()) {
+            return host;
+        }
+        String[] parts = host.split("\\.");
+        if (parts.length == 4) {
+            return parts[0] + "." + parts[1] + "." + parts[2] + ".*";
+        }
+        if (host.indexOf(':') >= 0) {
+            String[] groups = host.split(":");
+            if (groups.length >= 5) {
+                StringBuilder masked = new StringBuilder();
+                for (int i = 0; i < 4; ++i) {
+                    if (i > 0) {
+                        masked.append(':');
+                    }
+                    masked.append(groups[i]);
+                }
+                return masked + "::*";
+            }
+        }
+        return "masked:" + host.length();  // unknown shape - do not leak it
     }
 
     // ---- slow collectors (60-300 s) ------------------------------------

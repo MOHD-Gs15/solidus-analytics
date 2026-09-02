@@ -905,7 +905,7 @@ config/solidus-analytics/
 | `/analytics health` | GameMaster *(premium)* | Health score breakdown |
 | `/analytics fraud` / `fraud list` | GameMaster *(premium)* | Recent alerts |
 | `/analytics fraud scan` | Admin *(premium)* | Run all detectors |
-| `/analytics report weekly` | GameMaster | Generate weekly report |
+| `/analytics report weekly` *(premium)* | GameMaster | Generate weekly report |
 | `/analytics license` | Admin | License status |
 | `/analytics fingerprint` | Admin | Server fingerprint |
 | `/analytics dashboard [status]` | Admin | Dashboard subsystem state |

@@ -227,7 +227,9 @@ function openModal(c) {
   if (c.target) field(f, 'target', 'Target player name');
   for (const x of c.fields || []) field(f, x.k, x.label, x.type, x.ph || '', x.def);
   if (c.reason) field(f, 'reason', 'Reason (required)', null, 'why are you doing this?');
-  if (c.risk === 'W2') field(f, 'typed', `Type "${c.target ? 'the target name' : 'CONFIRM'}" exactly`);
+  // G2 (audit C-15 cluster): the typed-name confirmation is rendered for W2
+  // AND D - the protocol requires a typed name for both risk classes.
+  if (c.risk === 'W2' || c.risk === 'D') field(f, 'typed', `Type "${c.target ? 'the target name' : 'CONFIRM'}" exactly`);
   if (c.risk === 'D') field(f, 'password', 'Your password (re-entry)', 'password');
   $('modal-status').textContent = '';
   $('modal').classList.remove('hidden');
@@ -260,7 +262,13 @@ $('modal-send').addEventListener('click', async () => {
   if (c.financial) frame.idemKey = 'id-' + crypto.randomUUID().slice(0, 12);
   if (c.risk === 'W2') frame.confirm = { typed: val('typed') };
   if (c.risk === 'D') {
-    frame.confirm = { typed: val('typed') || target || 'CONFIRM', password: val('password') };
+    // audit C-15 cluster: NEVER auto-fill the typed name - the relay-side
+    // E_CONFIRM_MISMATCH check is only meaningful if a human typed it.
+    if (c.target && !val('typed')) {
+      $('modal-status').textContent = 'Type the target name to confirm.';
+      return;
+    }
+    frame.confirm = { typed: val('typed') || 'CONFIRM', password: val('password') };
     if (!modal.token) {
       modal.sending = true;
       $('modal-status').textContent = 'preparing destructive confirmation…';

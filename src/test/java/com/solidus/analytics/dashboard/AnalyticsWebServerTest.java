@@ -11,6 +11,7 @@ import java.util.Base64;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -189,5 +190,88 @@ class AnalyticsWebServerTest {
         assertEquals(200, response.statusCode());
         assertNull(response.headers().firstValue("Server").orElse(null));
         assertFalse(response.body().contains("NaN"));
+    }
+
+    // ---- audit round 2 (A-1, A-3, A-4) ---------------------------------
+
+    @Test
+    @DisplayName("A-4: security headers are stamped on EVERY response, including 401/405/429")
+    void securityHeadersOnErrorResponses() throws Exception {
+        HttpResponse<String> unauthorized = this.get("/api/data", null);
+        assertEquals(401, unauthorized.statusCode());
+        assertEquals("no-store", unauthorized.headers().firstValue("Cache-Control").orElse(null));
+        assertEquals("nosniff", unauthorized.headers().firstValue("X-Content-Type-Options").orElse(null));
+        assertEquals("DENY", unauthorized.headers().firstValue("X-Frame-Options").orElse(null));
+        assertEquals("default-src 'self'", unauthorized.headers().firstValue("Content-Security-Policy").orElse(null));
+
+        HttpResponse<String> notAllowed = this.request("POST", "/api/data", PASSWORD);
+        assertEquals(405, notAllowed.statusCode());
+        assertEquals("nosniff", notAllowed.headers().firstValue("X-Content-Type-Options").orElse(null));
+    }
+
+    @Test
+    @DisplayName("A-3: unauthenticated probes do not consume the failure budget (health checks behind the reverse proxy)")
+    void probesDoNotConsumeFailureBudget() throws Exception {
+        // 10 credential-less probes (scanner / uptime check pattern).
+        for (int i = 0; i < 10; ++i) {
+            assertEquals(401, this.get("/api/data", null).statusCode());
+        }
+        // A legitimate login right after must NOT be locked out.
+        HttpResponse<String> ok = this.get("/api/data", PASSWORD);
+        assertEquals(200, ok.statusCode());
+    }
+
+    @Test
+    @DisplayName("A-3: Retry-After reports the REAL remaining lockout (300s window, not hardcoded 60)")
+    void retryAfterReflectsRealLockout() throws Exception {
+        for (int i = 0; i < 5; ++i) {
+            this.get("/api/data", "nope-" + i);
+        }
+        HttpResponse<String> blocked = this.get("/api/data", PASSWORD);
+        assertEquals(429, blocked.statusCode());
+        int retryAfter = Integer.parseInt(blocked.headers().firstValue("Retry-After").get());
+        assertTrue(retryAfter >= 250, "lockout is 300s - advertised Retry-After must reflect it, got " + retryAfter);
+    }
+
+    @Test
+    @DisplayName("A-1: a legacy SHA-256 web hash verifies once and is migrated to PBKDF2")
+    void legacyWebHashIsMigratedOnSuccessfulLogin() throws Exception {
+        // Build a legacy-format hash (hex(salt):hex(digest)) for the password.
+        String legacyHash = DashboardEncryptionTest.legacyHashFor(PASSWORD);
+        AnalyticsWebServer legacyServer = new AnalyticsWebServer(null, 0, legacyHash);
+        final String[] upgradedHolder = new String[1];
+        legacyServer.setLegacyWebAuthMigration(password -> {
+            // Mirror DashboardManager.migrateWebLegacyHashIfAny.
+            upgradedHolder[0] = DashboardEncryption.hashPassword(password.toCharArray());
+            legacyServer.updatePasswordHash(upgradedHolder[0]);
+        });
+        try {
+            legacyServer.start();
+            HttpResponse<String> first = get(legacyServer, "/api/data", PASSWORD);
+            assertEquals(200, first.statusCode(), "legacy hash must verify for migration");
+
+            // The credential is now PBKDF2: the weak verifier is never consulted again.
+            assertNotNull(upgradedHolder[0], "migration callback must have fired");
+            assertTrue(upgradedHolder[0].startsWith("pbkdf2$"), "upgraded hash must be PBKDF2");
+            HttpResponse<String> second = get(legacyServer, "/api/data", PASSWORD);
+            assertEquals(200, second.statusCode(), "PBKDF2 record must verify after migration");
+            HttpResponse<String> wrong = get(legacyServer, "/api/data", "wrong");
+            assertEquals(401, wrong.statusCode());
+        } finally {
+            legacyServer.stop();
+        }
+    }
+
+    private HttpResponse<String> get(AnalyticsWebServer target, String path, String password) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + target.getPort() + path))
+            .timeout(Duration.ofSeconds(5))
+            .GET();
+        if (password != null) {
+            String credentials = Base64.getEncoder()
+                .encodeToString(("admin:" + password).getBytes(StandardCharsets.UTF_8));
+            builder.header("Authorization", "Basic " + credentials);
+        }
+        return this.client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 }

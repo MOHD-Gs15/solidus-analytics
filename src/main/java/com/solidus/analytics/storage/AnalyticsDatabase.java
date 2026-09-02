@@ -208,7 +208,13 @@ public class AnalyticsDatabase {
 
     public void upsertDailyMetrics(DailyMetrics metrics) {
         this.ensureInitialized();
-        String sql = "    INSERT OR REPLACE INTO analytics_daily_metrics\n    (date, transaction_count, transaction_volume, shop_buy_count, shop_sell_count,\n     auction_count, pay_transfer_count, new_players, active_players,\n     inflation_rate, top_item_bought, top_item_sold)\n    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n";
+        // D-6 fix: additive upsert. The in-memory day counters restart at 0
+        // after a crash/restart and the poll cursor re-seeds at MAX(id), so the
+        // post-restart partial-day row counts ONLY post-restart transactions.
+        // REPLACE used to clobber the pre-crash partial day; ADD merges the two
+        // halves into the correct full-day totals (ARCHITECTURE §6.1).
+        // non-mergeable fields (rates, top items) keep the newest observation.
+        String sql = "    INSERT INTO analytics_daily_metrics\n    (date, transaction_count, transaction_volume, shop_buy_count, shop_sell_count,\n     auction_count, pay_transfer_count, new_players, active_players,\n     inflation_rate, top_item_bought, top_item_sold)\n    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n    ON CONFLICT(date) DO UPDATE SET\n     transaction_count = transaction_count + excluded.transaction_count,\n     transaction_volume = transaction_volume + excluded.transaction_volume,\n     shop_buy_count = shop_buy_count + excluded.shop_buy_count,\n     shop_sell_count = shop_sell_count + excluded.shop_sell_count,\n     auction_count = auction_count + excluded.auction_count,\n     pay_transfer_count = pay_transfer_count + excluded.pay_transfer_count,\n     new_players = MAX(new_players, excluded.new_players),\n     active_players = MAX(active_players, excluded.active_players),\n     inflation_rate = excluded.inflation_rate,\n     top_item_bought = COALESCE(excluded.top_item_bought, top_item_bought),\n     top_item_sold = COALESCE(excluded.top_item_sold, top_item_sold)\n";
         Object object = this.connectionLock;
         synchronized (object) {
             try (PreparedStatement ps = this.persistentConnection.prepareStatement(sql);){

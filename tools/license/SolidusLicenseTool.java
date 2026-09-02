@@ -171,7 +171,7 @@ public final class SolidusLicenseTool {
             if (days <= 0) {
                 throw new CliError("--days must be positive", 2);
             }
-            expiry = LocalDate.now().plusDays(days).format(DateTimeFormatter.ISO_LOCAL_DATE);
+            expiry = LocalDate.now(java.time.ZoneOffset.UTC).plusDays(days).format(DateTimeFormatter.ISO_LOCAL_DATE);
         } else if (opts.containsKey("until")) {
             expiry = parseIsoDate(opts.get("until"));
         } else {
@@ -359,7 +359,7 @@ public final class SolidusLicenseTool {
                 return new VerifyOutcome(VerifyOutcome.Status.INVALID, "Invalid expiry date: " + expiry,
                         customer, expiry, fingerprint, product, nonce);
             }
-            if (LocalDate.now().isAfter(expiryDate)) {
+            if (LocalDate.now(java.time.ZoneOffset.UTC).isAfter(expiryDate)) {
                 return new VerifyOutcome(VerifyOutcome.Status.EXPIRED, "License expired on " + expiry,
                         customer, expiry, fingerprint, product, nonce);
             }
