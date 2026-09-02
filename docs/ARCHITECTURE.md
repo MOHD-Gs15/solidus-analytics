@@ -686,8 +686,17 @@ Not every metric needs conversion. Gini coefficient, top-1% share, money-to-good
 
 `DashboardDataBuilder.buildJson(engine)` produces the payload served at `/api/data` and (encrypted) via publishing. `app.js` reads exactly these field names.
 
+The payload is **versioned** (audit 12.1 exit criterion #3): the first field is
+`schemaVersion` (`DashboardDataBuilder.SCHEMA_VERSION`, currently `1`). Additive-only
+changes (new nullable fields, new sections) keep version 1; any rename, removal or
+semantic change to an existing field MUST bump it. Consumers may branch on this
+number; a golden contract test (`DashboardDataBuilderContractTest`) fails the build on
+unversioned breaking changes. A `schemaVersion`-pinned contract test also pins the
+null-tolerance rules below and the cents-only money convention.
+
 ```json
 {
+  "schemaVersion": 1,
   "timestamp": 1756300000000,
   "server": { "name": "…", "fingerprint": "…" },
   "liveMetrics": {

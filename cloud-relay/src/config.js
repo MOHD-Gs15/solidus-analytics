@@ -24,6 +24,7 @@ const config = {
   heartbeatTimeoutMs: 120_000,      // §4.1 - agent.heartbeat.lost
   eventRing: 200,                   // §6.6
   tokenTtlDays: 30,
+  wsTicketTtlMs: 30_000,            // audit P1-5 - single-use WS upgrade tickets
   auditRetentionDays: 90,
   idemCacheMs: 10 * 60_000,         // §8
   commandTtlMs: 60_000,             // §3 (D-class 90 s handled per command)
