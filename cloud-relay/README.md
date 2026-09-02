@@ -17,6 +17,17 @@ Responsibilities (v1):
 - **WebSocket tickets** — `POST /api/ws-ticket` (Bearer) mints a 30 s
   single-use ticket that authenticates the `/app` upgrade; long-lived tokens
   never ride URLs.
+- **Audit round 2 (0.2.1)** — relay-side commands are role-gated and
+  rate-limited (viewer no longer reaches `audit.*`/`alert.*`/`session.*`);
+  `select` validates tenant ownership; revoked/expired sessions are evicted
+  from live sockets; non-canonical role strings fail CLOSED; `expiresAt` is
+  clamped to the class TTL; WS frames are capped at 256 KiB with a 10 s
+  pre-hello timeout; failed agent hellos are truncated and throttled;
+  push-subscribe endpoints must be https push-service URLs (SSRF); the
+  audit ledger is tenant-scoped per reader; `alert.silence` actually
+  suppresses delivery; login runs dummy scrypt for unknown users
+  (anti-enumeration); this process never terminates TLS — front it with a
+  reverse proxy (the startup banner says so honestly now).
 - **Store & forward (durable)** — 200-event ring buffer per server and the
   offline command queue live in `data/relay.db` (SQLite, WAL), so they survive
   relay restarts AND agent disconnects; the queue is bounded by command TTL

@@ -23,7 +23,13 @@ public final class AnchorFreezeManager {
     private static final double RADIUS = 2.0;
     private static final long MESSAGE_INTERVAL_MS = 5000L;
 
-    private record Anchor(String level, double x, double y, double z, String reason, String by, long at, long lastMsgMs) {}
+    /** B-12 fix: the anchor now remembers the LEVEL OBJECT it was taken in.
+     * Teleports always target that level, so a player escaping to another
+     * dimension is pulled back to the correct dimension instead of being
+     * teleported to overworld coordinates inside the wrong dimension (which
+     * can bury them in blocks or drop them into the void, every tick). */
+    private record Anchor(net.minecraft.server.level.ServerLevel level, String levelName,
+                          double x, double y, double z, String reason, String by, long at, long lastMsgMs) {}
 
     private final ConcurrentHashMap<String, Anchor> anchors = new ConcurrentHashMap<String, Anchor>();
 
@@ -31,7 +37,7 @@ public final class AnchorFreezeManager {
         double x = player.getX();
         double y = player.getY();
         double z = player.getZ();
-        String level = this.levelName(player);
+        net.minecraft.server.level.ServerLevel level = player.level();
         if (anchorAtSpawn) {
             try {
                 net.minecraft.core.BlockPos spawn = player.level().getLevelData().getRespawnData().pos();
@@ -44,7 +50,7 @@ public final class AnchorFreezeManager {
             }
         }
         this.anchors.put(player.getGameProfile().name(),
-            new Anchor(level, x, y, z, reason == null ? "frozen" : reason, by == null ? "unknown" : by,
+            new Anchor(level, this.levelName(player), x, y, z, reason == null ? "frozen" : reason, by == null ? "unknown" : by,
                 System.currentTimeMillis(), 0L));
         player.sendSystemMessage(Component.literal("[Solidus] You have been frozen in place: " + (reason == null ? "" : reason)));
     }
@@ -73,13 +79,15 @@ public final class AnchorFreezeManager {
             double dx = player.getX() - anchor.x();
             double dy = player.getY() - anchor.y();
             double dz = player.getZ() - anchor.z();
-            boolean drifted = currentLevel == null || !currentLevel.equals(anchor.level())
+            boolean drifted = currentLevel == null || !currentLevel.equals(anchor.levelName())
                 || dx * dx + dy * dy + dz * dz > RADIUS * RADIUS;
             if (!drifted) {
                 continue;
             }
             try {
-                player.teleportTo(player.level(), anchor.x(), anchor.y(), anchor.z(),
+                // Teleport to the ANCHOR's level (correct dimension), never the
+                // player's current (wrong) one - audit B-12.
+                player.teleportTo(anchor.level(), anchor.x(), anchor.y(), anchor.z(),
                     java.util.Set.of(), player.getYRot(), player.getXRot(), false);
             }
             catch (Throwable t) {
@@ -88,7 +96,7 @@ public final class AnchorFreezeManager {
             long now = System.currentTimeMillis();
             if (now - anchor.lastMsgMs() > MESSAGE_INTERVAL_MS) {
                 this.anchors.put(playerName,
-                    new Anchor(anchor.level(), anchor.x(), anchor.y(), anchor.z(), anchor.reason(),
+                    new Anchor(anchor.level(), anchor.levelName(), anchor.x(), anchor.y(), anchor.z(), anchor.reason(),
                         anchor.by(), anchor.at(), now));
                 player.sendSystemMessage(Component.literal("[Solidus] You are frozen: " + anchor.reason()));
             }
@@ -101,7 +109,7 @@ public final class AnchorFreezeManager {
         this.anchors.forEach((name, anchor) -> {
             JsonObject f = new JsonObject();
             f.addProperty("n", name);
-            f.addProperty("level", anchor.level());
+            f.addProperty("level", anchor.levelName());
             f.addProperty("x", anchor.x());
             f.addProperty("y", anchor.y());
             f.addProperty("z", anchor.z());

@@ -12,7 +12,10 @@ import java.util.Base64;
 public class AnalyticsWebServer
 extends NanoHTTPD {
     private final AnalyticsEngine engine;
-    private final String passwordHash;
+    private volatile String passwordHash;
+    /** A-1 fix: re-hashes the web credential with PBKDF2 after a successful
+     *  legacy-hash login (mirrors the vault-side R19 migration). */
+    private volatile java.util.function.Consumer<String> legacyWebAuthMigration;
     /** Per-IP throttling for Basic auth (PBKDF2 DoS + brute-force mitigation). */
     private final AuthRateLimiter authLimiter = new AuthRateLimiter();
     private volatile String cachedData = "{}";
@@ -54,10 +57,10 @@ extends NanoHTTPD {
         if (NanoHTTPD.Method.OPTIONS.equals(method)) {
             NanoHTTPD.Response response = AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "");
             response.addHeader("Allow", "GET, OPTIONS");
-            return response;
+            return this.stampSecurityHeaders(response);
         }
         if (!NanoHTTPD.Method.GET.equals(method)) {
-            return AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, "text/plain", "Method Not Allowed");
+            return this.stampSecurityHeaders(AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, "text/plain", "Method Not Allowed"));
         }
         // Rate limiting runs BEFORE the PBKDF2 verification: a blocked IP is
         // rejected cheaply, so request floods cannot pin the server CPU on
@@ -66,17 +69,30 @@ extends NanoHTTPD {
         if (this.authLimiter.isBlocked(remoteIp)) {
             SolidusAnalyticsMod.LOGGER.warn("Analytics dashboard: auth rate limit hit from {}", remoteIp);
             NanoHTTPD.Response tooMany = AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.TOO_MANY_REQUESTS, "text/plain", "Too many failed attempts. Try again later.");
-            tooMany.addHeader("Retry-After", "60");
-            return tooMany;
+            // A-3 fix: report the REAL remaining lockout (was hardcoded 60s
+            // while the lock actually lasts 300s).
+            tooMany.addHeader("Retry-After", String.valueOf(Math.max(1L, this.authLimiter.getRemainingLockMs(remoteIp) / 1000L)));
+            return this.stampSecurityHeaders(tooMany);
         }
         if (!this.isAuthenticated(session)) {
             NanoHTTPD.Response unauthorized = AnalyticsWebServer.newFixedLengthResponse(NanoHTTPD.Response.Status.UNAUTHORIZED, "text/html", "<html><body><h1>401 Unauthorized</h1><p>Valid credentials required.</p></body></html>");
             // SEC FIX: never reveal the setup command to unauthenticated callers.
             // Standard Basic-auth clients need this header to prompt for credentials.
             unauthorized.addHeader("WWW-Authenticate", "Basic realm=\"Solidus Analytics\"");
-            return unauthorized;
+            return this.stampSecurityHeaders(unauthorized);
         }
-        NanoHTTPD.Response response = this.routeRequest(uri, session);
+        return this.stampSecurityHeaders(this.routeRequest(uri, session));
+    }
+
+    /**
+     * A-4 fix: ARCHITECTURE §8 requires the hardening header set on EVERY
+     * response. The early-return bodies are constants today, but any future
+     * change that reflects request data into a 401/404/404/429 body would
+     * inherit an unprotected text/html response otherwise. API semantics
+     * (no-store) are stamped on everything; cache-bearing static assets are
+     * not served by this server (all responses are API or app shell).
+     */
+    private NanoHTTPD.Response stampSecurityHeaders(NanoHTTPD.Response response) {
         response.addHeader("Cache-Control", "no-store");
         response.addHeader("X-Content-Type-Options", "nosniff");
         response.addHeader("X-Frame-Options", "DENY");
@@ -134,7 +150,11 @@ extends NanoHTTPD {
         }
         String authHeader = (String)session.getHeaders().get("authorization");
         if (authHeader == null || !authHeader.startsWith("Basic ")) {
-            this.authLimiter.recordFailure(remoteIp);
+            // A-3 fix: missing credentials are a PROBE (scanner, health check,
+            // cancelled browser dialog), not a guess. They must not consume the
+            // per-IP failure budget - behind the documented reverse proxy every
+            // client shares one bucket, so counting probes let a 10s-interval
+            // uptime check brick the dashboard for everyone.
             return false;
         }
         try {
@@ -142,6 +162,12 @@ extends NanoHTTPD {
             int colonIndex = decoded.indexOf(':');
             String password = colonIndex >= 0 ? decoded.substring(colonIndex + 1) : decoded;
             if (DashboardEncryption.verifyPassword(password.toCharArray(), this.passwordHash)) {
+                // A-1 fix: migrate the web credential off the legacy single-iteration
+                // SHA-256 the moment the correct password is proven (R19 for the web path).
+                if (DashboardEncryption.isLegacyHash(this.passwordHash)
+                    && this.legacyWebAuthMigration != null) {
+                    this.legacyWebAuthMigration.accept(password);
+                }
                 this.authLimiter.recordSuccess(remoteIp);
                 return true;
             }
@@ -152,6 +178,16 @@ extends NanoHTTPD {
             this.authLimiter.recordFailure(remoteIp);
             return false;
         }
+    }
+
+    /** A-1: registers the legacy web-hash migration callback (owner: DashboardManager). */
+    public void setLegacyWebAuthMigration(java.util.function.Consumer<String> migration) {
+        this.legacyWebAuthMigration = migration;
+    }
+
+    /** A-1/A-2: live-update the Basic-auth credential after provisioning/migration. */
+    public void updatePasswordHash(String newHash) {
+        this.passwordHash = newHash;
     }
 
     private String loadResource(String path) {

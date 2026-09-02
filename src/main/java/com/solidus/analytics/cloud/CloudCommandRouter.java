@@ -132,24 +132,46 @@ public final class CloudCommandRouter {
             this.sink.sendResult(msgId, rid, cmd, target, actor, "rejected", "E_ARGS", null, "idemKey is mandatory for financial commands", 0L, false);
             return;
         }
+        // B-2 fix: atomic claim BEFORE dispatch. INSERT OR IGNORE is the
+        // linearization point - two frames racing with the same idemKey (or a
+        // relay crash-re-forward, which §8 explicitly relies on the agent to
+        // catch) can no longer both pass the old check-then-act gap.
+        boolean owned = false;
         if (spec.financial() && idemKey != null) {
-            String prior = this.agent.store().findIdempotent(idemKey);
-            if (prior != null) {
+            CloudAgentStore.Claim claim = this.agent.store().claimIdempotent(idemKey, spec.id());
+            if (claim.storeError()) {
+                // Fail CLOSED: never execute money movement without idempotency.
+                this.sink.sendResult(msgId, rid, cmd, target, actor, "rejected", "E_EXEC", null,
+                    "idempotency store unavailable - refusing to execute financial command", 0L, false);
+                return;
+            }
+            if (!claim.claimed()) {
+                if ("pending".equals(claim.existingStatus())) {
+                    this.sink.sendResult(msgId, rid, cmd, target, actor, "rejected", "E_IDEM_DUP", null,
+                        "a command with this idemKey is already executing", 0L, false);
+                    return;
+                }
+                // Terminal prior outcome: replay it (§8 - duplicates return the
+                // first result), marked duplicate:true, never re-executed.
                 JsonObject d = null;
                 try {
-                    d = com.google.gson.JsonParser.parseString(prior).getAsJsonObject();
+                    d = com.google.gson.JsonParser.parseString(claim.existingResultJson()).getAsJsonObject();
                     d.addProperty("duplicate", true);
                 }
                 catch (Exception ignored) {
                     d = new JsonObject();
                     d.addProperty("duplicate", true);
+                    d.addProperty("priorStatus", claim.existingStatus());
                 }
                 this.sink.sendResult(msgId, rid, cmd, target, actor, "applied", null, d, null, 0L, true);
                 return;
             }
+            owned = true;
         }
+        final boolean idemOwned = owned;
+        final String finalIdemKey = idemKey;
         final Actor cmdActor = actor;
-        Runnable task = () -> this.execute(msgId, rid, spec, target, reason, args, cmdActor, at, idemKey);
+        Runnable task = () -> this.execute(msgId, rid, spec, target, reason, args, cmdActor, at, finalIdemKey, idemOwned);
         MinecraftServer server = this.agent.server();
         if (spec.affinity() == Affinity.SERVER) {
             if (server == null) {
@@ -164,7 +186,7 @@ public final class CloudCommandRouter {
     }
 
     private void execute(String msgId, String rid, Spec spec, String target, String reason,
-                         JsonObject args, Actor actor, long at, String idemKey) {
+                         JsonObject args, Actor actor, long at, String idemKey, boolean idemOwned) {
         Ctx ctx = new Ctx(spec.id(), target, reason == null ? "" : reason.trim(), actor, at);
         long t0 = System.currentTimeMillis();
         JsonObject data = null;
@@ -186,9 +208,13 @@ public final class CloudCommandRouter {
             SolidusAnalyticsMod.LOGGER.error("[Cloud] command '{}' failed", (Object)spec.id(), (Object)e);
         }
         long tookMs = System.currentTimeMillis() - t0;
-        if ("applied".equals(status) && spec.financial() && idemKey != null) {
+        // B-2 fix: finalize the claim with the FIRST terminal outcome so later
+        // duplicates replay this result instead of re-executing (§8). This also
+        // covers rejections: a retried frame with the same idemKey gets the same
+        // answer deterministically instead of a second Core write attempt.
+        if (idemOwned && idemKey != null) {
             JsonObject stored = data == null ? new JsonObject() : data;
-            this.agent.store().putIdempotent(idemKey, spec.id(), status, stored.toString());
+            this.agent.store().finalizeIdempotent(idemKey, spec.id(), status, stored.toString());
         }
         this.agent.store().logCommand(System.currentTimeMillis(), rid, spec.id(), ctx.target(),
             actor.uid(), actor.name(), actor.role(), status, code,
@@ -208,6 +234,66 @@ public final class CloudCommandRouter {
             throw new CmdError("E_ARGS", "invalid player name for '" + key + "'");
         }
         return v;
+    }
+
+    /**
+     * B-4 fix: every name interpolated into a pre-templated vanilla command
+     * (G1 Console path) passes through here. The javadoc contract says names
+     * are validated against {@code ^[A-Za-z0-9_]{1,16}$} BEFORE reaching the
+     * dispatcher - on offline-mode servers a crafted profile name like
+     * {@code @a} would otherwise turn {@code kick <t>} into a selector and
+     * kick/ban the entire server. Envelope targets are wire-controlled, so
+     * they are validated here rather than trusted.
+     */
+    static String consoleTarget(String target) throws CmdError {
+        if (target == null || !SAFE_NAME.matcher(target).matches()) {
+            throw new CmdError("E_ARGS", "target is not a safe player name for the console path");
+        }
+        return target;
+    }
+
+    /**
+     * B-8 fix: the relay-side W2 typed-name confirmation binds the ENVELOPE
+     * {@code target} (PROTOCOL §7: confirm.typed must equal target). The econ
+     * handlers historically executed on {@code args.target} - a frame could
+     * confirm one name and move another account's money. Enforce that when
+     * {@code args.target} is present it matches the envelope target exactly,
+     * then use that (validated) name.
+     */
+    static String confirmedTarget(Ctx ctx, JsonObject args, String key) throws CmdError {
+        String argTarget = str(args, key);
+        String envelopeTarget = ctx.target() == null ? "" : ctx.target().trim();
+        if (argTarget != null && !argTarget.isBlank() && !argTarget.trim().equals(envelopeTarget)) {
+            throw new CmdError("E_ARGS", "args.target must equal the envelope target (confirmed name)");
+        }
+        return requireName(args, key);
+    }
+
+    /** B-10 fix: reads the live player list on the server thread only. */
+    List<String> snapshotOnlineNames() throws CmdError {
+        MinecraftServer server = this.agent.server();
+        if (server == null) {
+            throw new CmdError("E_STATE", "server not ready");
+        }
+        try {
+            java.util.concurrent.CompletableFuture<List<String>> future = new java.util.concurrent.CompletableFuture<>();
+            server.execute(() -> {
+                try {
+                    java.util.ArrayList<String> names = new java.util.ArrayList<>();
+                    for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+                        names.add(p.getGameProfile().name());
+                    }
+                    future.complete(names);
+                }
+                catch (Throwable t) {
+                    future.completeExceptionally(t);
+                }
+            });
+            return future.get(10L, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        catch (Exception e) {
+            throw new CmdError("E_EXEC", "could not snapshot online players: " + e);
+        }
     }
 
     static long requireAmountC(JsonObject args, String key, long max) throws CmdError {
@@ -325,28 +411,32 @@ public final class CloudCommandRouter {
         });
         // === player moderation (Console path, templated) ===
         this.reg("player.kick", Risk.W1, false, "mod", Affinity.SERVER, (ctx, args) -> {
-            ServerPlayer p = this.onlineExact(a.server(), ctx.target());
+            String target = consoleTarget(ctx.target());
+            ServerPlayer p = this.onlineExact(a.server(), target);
             if (p == null) {
                 throw new CmdError("E_NO_SUCH_PLAYER", "player is not online");
             }
-            this.console(a.server(), "kick " + ctx.target() + " " + sanitizeFree(ctx.reason(), 128));
+            this.console(a.server(), "kick " + target + " " + sanitizeFree(ctx.reason(), 128));
             return ok();
         });
         this.reg("player.ban", Risk.W2, false, "admin", Affinity.SERVER, (ctx, args) -> {
-            this.requireKnown(ctx.target());
-            this.console(a.server(), "ban " + ctx.target() + " " + sanitizeFree(ctx.reason(), 128));
+            String target = consoleTarget(ctx.target());
+            this.requireKnown(target);
+            this.console(a.server(), "ban " + target + " " + sanitizeFree(ctx.reason(), 128));
             return ok();
         });
         this.reg("player.ban.ip", Risk.W2, false, "admin", Affinity.SERVER, (ctx, args) -> {
-            ServerPlayer p = this.onlineExact(a.server(), ctx.target());
+            String target = consoleTarget(ctx.target());
+            ServerPlayer p = this.onlineExact(a.server(), target);
             if (p == null) {
                 throw new CmdError("E_NO_SUCH_PLAYER", "player is not online (IP ban needs a session)");
             }
-            this.console(a.server(), "ban-ip " + ctx.target() + " " + sanitizeFree(ctx.reason(), 128));
+            this.console(a.server(), "ban-ip " + target + " " + sanitizeFree(ctx.reason(), 128));
             return ok();
         });
         this.reg("player.unban", Risk.W2, false, "admin", Affinity.SERVER, (ctx, args) -> {
-            this.console(a.server(), "pardon " + ctx.target());
+            String target = consoleTarget(ctx.target());
+            this.console(a.server(), "pardon " + target);
             return ok();
         });
         this.reg("player.gamemode", Risk.W1, false, "mod", Affinity.SERVER, (ctx, args) -> {
@@ -354,11 +444,12 @@ public final class CloudCommandRouter {
             if (mode == null || !List.of("survival", "creative", "adventure", "spectator").contains(mode)) {
                 throw new CmdError("E_ARGS", "mode must be survival|creative|adventure|spectator");
             }
-            ServerPlayer p = this.onlineExact(a.server(), ctx.target());
+            String target = consoleTarget(ctx.target());
+            ServerPlayer p = this.onlineExact(a.server(), target);
             if (p == null) {
                 throw new CmdError("E_NO_SUCH_PLAYER", "player is not online");
             }
-            this.console(a.server(), "gamemode " + mode + " " + ctx.target());
+            this.console(a.server(), "gamemode " + mode + " " + target);
             return ok();
         });
         this.reg("player.heal", Risk.W1, false, "mod", Affinity.SERVER, (ctx, args) -> {
@@ -384,8 +475,9 @@ public final class CloudCommandRouter {
             if (item == null || !SAFE_ITEM.matcher(item).matches()) {
                 throw new CmdError("E_ARGS", "item must be a namespaced id like minecraft:diamond");
             }
-            this.requireKnown(ctx.target());
-            this.console(a.server(), "give " + ctx.target() + " " + item + " " + qty);
+            String target = consoleTarget(ctx.target());
+            this.requireKnown(target);
+            this.console(a.server(), "give " + target + " " + item + " " + qty);
             return ok();
         });
         this.reg("player.msg", Risk.W1, false, "mod", Affinity.SERVER, (ctx, args) -> {
@@ -427,8 +519,9 @@ public final class CloudCommandRouter {
                 throw new CmdError("E_ARGS", "action must be add|remove|on|off");
             }
             if ("add".equals(action) || "remove".equals(action)) {
-                this.requireKnown(ctx.target());
-                this.console(a.server(), "whitelist " + action + " " + ctx.target());
+                String target = consoleTarget(ctx.target());
+                this.requireKnown(target);
+                this.console(a.server(), "whitelist " + action + " " + target);
             }
             else {
                 this.console(a.server(), "whitelist " + action);
@@ -436,7 +529,8 @@ public final class CloudCommandRouter {
             return ok();
         });
         this.reg("player.tp", Risk.W1, false, "mod", Affinity.SERVER, (ctx, args) -> {
-            ServerPlayer p = this.onlineExact(a.server(), ctx.target());
+            String target = consoleTarget(ctx.target());
+            ServerPlayer p = this.onlineExact(a.server(), target);
             if (p == null) {
                 throw new CmdError("E_NO_SUCH_PLAYER", "player is not online");
             }
@@ -448,21 +542,21 @@ public final class CloudCommandRouter {
             switch (kind) {
                 case "spawn" -> {
                     net.minecraft.core.BlockPos spawn = this.spawnPos(p);
-                    this.console(a.server(), "tp " + ctx.target() + " " + spawn.getX() + " " + spawn.getY() + " " + spawn.getZ());
+                    this.console(a.server(), "tp " + target + " " + spawn.getX() + " " + spawn.getY() + " " + spawn.getZ());
                 }
                 case "coords" -> {
                     Double x = num(to, "x"), y = num(to, "y"), z = num(to, "z");
                     if (x == null || y == null || z == null) {
                         throw new CmdError("E_ARGS", "coords require x,y,z");
                     }
-                    this.console(a.server(), "tp " + ctx.target() + " " + x + " " + y + " " + z);
+                    this.console(a.server(), "tp " + target + " " + x + " " + y + " " + z);
                 }
                 case "player" -> {
                     String other = str(to, "player");
                     if (other == null || !SAFE_NAME.matcher(other).matches()) {
                         throw new CmdError("E_ARGS", "to.player invalid");
                     }
-                    this.console(a.server(), "tp " + ctx.target() + " " + other);
+                    this.console(a.server(), "tp " + target + " " + other);
                 }
                 default -> throw new CmdError("E_ARGS", "to.kind must be spawn|coords|player");
             }
@@ -507,7 +601,7 @@ public final class CloudCommandRouter {
         // === economy: money (API path, offline-capable, idempotent) ===
         this.reg("econ.grant", Risk.W2, true, "admin", Affinity.ASYNC, (ctx, args) -> {
             long amountC = requireAmountC(args, "amountC", MAX_AMOUNT_C);
-            String name = requireName(args, "target");
+            String name = confirmedTarget(ctx, args, "target");
             this.requireKnown(name);
             String uuid = this.resolveUuid(name);
             com.solidus.analytics.integration.SolidusIntegration api = com.solidus.analytics.integration.SolidusIntegration.getInstance();
@@ -515,13 +609,18 @@ public final class CloudCommandRouter {
                 throw new CmdError("E_CORE_MISSING", "Solidus Core is not loaded");
             }
             Double newBalance = api.addBalanceOffline(UUID.fromString(uuid), name, (double)amountC / 100.0, 5);
+            if (newBalance == null) {
+                // B-6 fix: a failed/timed-out Core write is NOT a success - acking
+                // it as applied would poison the idempotency row and the audit.
+                throw new CmdError("E_EXEC", "Core write failed - balance unchanged");
+            }
             JsonObject d = ok();
-            d.addProperty("balanceC", newBalance == null ? null : Math.round(newBalance * 100.0));
+            d.addProperty("balanceC", Math.round(newBalance * 100.0));
             return d;
         });
         this.reg("econ.deduct", Risk.W2, true, "admin", Affinity.ASYNC, (ctx, args) -> {
             long amountC = requireAmountC(args, "amountC", MAX_AMOUNT_C);
-            String name = requireName(args, "target");
+            String name = confirmedTarget(ctx, args, "target");
             this.requireKnown(name);
             String uuid = this.resolveUuid(name);
             com.solidus.analytics.integration.SolidusIntegration api = com.solidus.analytics.integration.SolidusIntegration.getInstance();
@@ -533,13 +632,16 @@ public final class CloudCommandRouter {
                 throw new CmdError("E_STATE", "insufficient balance for deduction");
             }
             Double newBalance = api.subtractBalanceOffline(UUID.fromString(uuid), name, (double)amountC / 100.0, 5);
+            if (newBalance == null) {
+                throw new CmdError("E_EXEC", "Core write failed - balance unchanged");
+            }
             JsonObject d = ok();
-            d.addProperty("balanceC", newBalance == null ? null : Math.round(newBalance * 100.0));
+            d.addProperty("balanceC", Math.round(newBalance * 100.0));
             return d;
         });
         this.reg("econ.transfer", Risk.W2, true, "admin", Affinity.ASYNC, (ctx, args) -> {
             long amountC = requireAmountC(args, "amountC", MAX_AMOUNT_C);
-            String from = requireName(args, "target");
+            String from = confirmedTarget(ctx, args, "target");
             String to = requireName(args, "to");
             this.requireKnown(from);
             this.requireKnown(to);
@@ -562,12 +664,12 @@ public final class CloudCommandRouter {
             if (scope == null || !List.of("online", "known").contains(scope)) {
                 throw new CmdError("E_ARGS", "scope must be online|known");
             }
+            // B-10 fix: the live player list may ONLY be iterated on the server
+            // thread - reading it from a cloud worker risks a mid-grant CME
+            // (partial payout, no idem row). Snapshot it via the server executor.
             List<String> names;
             if ("online".equals(scope)) {
-                names = new java.util.ArrayList<String>();
-                for (ServerPlayer p : a.server().getPlayerList().getPlayers()) {
-                    names.add(p.getGameProfile().name());
-                }
+                names = this.snapshotOnlineNames();
             }
             else {
                 names = a.economy().knownPlayerNames(500);
@@ -597,6 +699,7 @@ public final class CloudCommandRouter {
         });
         // === veto state (Hook path) ===
         this.reg("econ.pause.global", Risk.D, false, "owner", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             if (a.veto().getGlobalPause() != null) {
                 throw new CmdError("E_STATE", "economy is already paused");
             }
@@ -605,6 +708,7 @@ public final class CloudCommandRouter {
             return ok();
         });
         this.reg("econ.resume.global", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             if (a.veto().getGlobalPause() == null) {
                 throw new CmdError("E_STATE", "economy is not paused");
             }
@@ -613,11 +717,13 @@ public final class CloudCommandRouter {
             return ok();
         });
         this.reg("market.auction.pause", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             a.veto().setAuctionsPaused(new CloudVetoHook.PauseInfo(ctx.reason(), ctx.actor().name(), ctx.at()));
             this.sink.onVetoChanged();
             return ok();
         });
         this.reg("market.auction.resume", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             if (a.veto().getAuctionsPaused() == null) {
                 throw new CmdError("E_STATE", "auctions are not paused");
             }
@@ -626,11 +732,13 @@ public final class CloudCommandRouter {
             return ok();
         });
         this.reg("market.shop.pause", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             a.veto().setShopPaused(new CloudVetoHook.PauseInfo(ctx.reason(), ctx.actor().name(), ctx.at()));
             this.sink.onVetoChanged();
             return ok();
         });
         this.reg("market.shop.resume", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             if (a.veto().getShopPaused() == null) {
                 throw new CmdError("E_STATE", "shop is not paused");
             }
@@ -639,8 +747,9 @@ public final class CloudCommandRouter {
             return ok();
         });
         this.reg("econ.freeze", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
-            String name = requireName(args, "target");
+            String name = confirmedTarget(ctx, args, "target");
             this.requireKnown(name);
+            this.requireVetoHook();
             String uuid = this.resolveUuid(name);
             a.veto().freeze(UUID.fromString(uuid), name,
                 new CloudVetoHook.FreezeInfo(name, ctx.reason(), ctx.actor().name(), ctx.at()));
@@ -648,7 +757,8 @@ public final class CloudCommandRouter {
             return ok();
         });
         this.reg("econ.unfreeze", Risk.W2, false, "admin", Affinity.ASYNC, (ctx, args) -> {
-            String name = requireName(args, "target");
+            String name = confirmedTarget(ctx, args, "target");
+            this.requireVetoHook();
             String uuid = this.resolveUuid(name);
             if (!a.veto().unfreeze(UUID.fromString(uuid))) {
                 throw new CmdError("E_STATE", "account is not frozen");
@@ -685,11 +795,17 @@ public final class CloudCommandRouter {
             return a.backupPrune(keepDays);
         });
         this.reg("pairing.rotate", Risk.W2, false, "owner", Affinity.ASYNC, (ctx, args) -> {
-            String secret = a.rotatePairingSecret();
+            // B-1 fix: NEVER put the secret in the result data - results are
+            // persisted to cloud_command_log (local mirror), the relay's audit
+            // ledger (§12) and broadcast as cmd.audit to every client (§6.7).
+            // An admin reading any of those would otherwise walk away with the
+            // agent credential. The secret travels only via the local 0600
+            // config file and one server-side log line the owner controls.
+            a.rotatePairingSecret();
             JsonObject d = ok();
             d.addProperty("serverId", a.config().getServerId());
-            d.addProperty("newSecret", secret);
-            d.addProperty("note", "update the relay pairing within 120s - the old secret is dead");
+            d.addProperty("rotated", true);
+            d.addProperty("note", "new secret written to cloud.properties and the server log (owner-only); update the relay pairing within 120s - the old secret is dead");
             return d;
         });
         // === documented Core+ gaps: capability-absent answers ===
@@ -703,6 +819,7 @@ public final class CloudCommandRouter {
         }
         // gov.freeze.global is the SAME breaker as econ.pause.global (one truth)
         this.reg("gov.freeze.global", Risk.D, false, "owner", Affinity.ASYNC, (ctx, args) -> {
+            this.requireVetoHook();
             if (a.veto().getGlobalPause() != null) {
                 throw new CmdError("E_STATE", "economy is already paused");
             }
@@ -710,6 +827,16 @@ public final class CloudCommandRouter {
             this.sink.onVetoChanged();
             return ok();
         });
+    }
+
+    /** B-9 fix: pause/freeze commands must only report applied when the veto
+     *  hook is actually registered into Core - otherwise the cloud UI shows a
+     *  circuit breaker as active while nothing is enforced on the server. */
+    private void requireVetoHook() throws CmdError {
+        if (!this.agent.veto().isHookActive()) {
+            throw new CmdError("E_CORE_MISSING",
+                "veto hook is not registered into Solidus Core - pause/freeze would not be enforced");
+        }
     }
 
     private JsonObject destructiveStop(Ctx ctx, boolean restart) throws CmdError {

@@ -70,9 +70,14 @@ class Store {
       this.saveUsers();
       return null;
     }
-    sess.lastSeen = Date.now();
+    // audit C-13: lastSeen used to trigger a full-file rewrite on EVERY token
+    // lookup (every authenticated request). Throttle to one write per minute.
+    const now = Date.now();
+    if (now - sess.lastSeen > 60000) {
+      sess.lastSeen = now;
+      this.saveUsers();
+    }
     const u = this.users.users.find((x) => x.id === sess.userId);
-    this.saveUsers();
     return u ? { user: u, session: sess } : null;
   }
 
@@ -153,13 +158,18 @@ class Store {
    * Splitting on 0x0A operates on raw Buffers, so multi-byte UTF-8 sequences
    * split across chunk boundaries stay intact.
    */
-  auditQuery({ fromMs, toMs, actor, cmd, target, limit = 100 }) {
+  auditQuery({ fromMs, toMs, actor, cmd, target, limit = 100, serverIds }) {
     const max = Math.min(limit, 2000);
     const rows = [];
     let fd;
     try { fd = fs.openSync(this.auditPath, 'r'); } catch { return rows; }
     const CHUNK = 64 * 1024;
+    // audit C-1: tenant scoping - null/undefined serverIds means "no filter"
+    // (owner); an array restricts rows to the caller's own servers. Rows with
+    // no serverId (e.g. cross-cutting auth rows) are owner-only.
+    const serverFilter = Array.isArray(serverIds) ? new Set(serverIds) : null;
     const matches = (r) => (!toMs || r.ts <= toMs)
+      && (!serverFilter || (r.serverId != null && serverFilter.has(r.serverId)))
       && (!actor || r.actorName === actor)
       && (!cmd || r.cmd === cmd)
       && (!target || r.target === target);

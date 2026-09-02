@@ -67,7 +67,10 @@ public class AnalyticsEngine {
         this.snapshotScheduler.setEngineRef(this);
         this.snapshotScheduler.setSnapshotIntervalMinutes(this.config.getSnapshotIntervalMinutes());
         this.inflationCalculator = new InflationCalculator(this.database, this.economyDbPath, this.auctionsDbPath);
-        this.weeklyReportGenerator = new WeeklyReportGenerator(this, this.configDirPath);
+        // D-3 fix: WeeklyReportGenerator is a PREMIUM feature (ARCHITECTURE §10/§10.4) -
+        // it is constructed only inside initializePremium(), exactly like healthScore
+        // and fraudDetector. Without a license it stays null and every caller
+        // (command + scheduler) already null-checks, so no code path can reach it.
         this.initializePremium(this.configDirPath);
         this.dashboardManager = new DashboardManager(this, this.configDirPath);
         this.dashboardManager.initialize();
@@ -92,6 +95,7 @@ public class AnalyticsEngine {
             this.healthScore = new EconomyHealthScore(this);
             this.fraudDetector = new FraudDetector(this, this.economyDbPath);
             this.discordNotifier = new DiscordWebhookNotifier();
+            this.weeklyReportGenerator = new WeeklyReportGenerator(this, this.configDirPath);
             if (this.config.isDiscordEnabled()) {
                 this.discordNotifier.configure(this.config.getDiscordWebhookUrl(), true);
                 this.discordNotifier.setNotifyFraud(this.config.isNotifyFraud());
@@ -184,7 +188,9 @@ public class AnalyticsEngine {
     }
 
     public boolean isPremiumEnabled() {
-        return this.premiumEnabled;
+        // D-8 fix: delegate to the verifier so a license expiring mid-session
+        // (or a re-verified key file) is honored without a server restart.
+        return this.licenseVerifier != null && this.licenseVerifier.isPremiumEnabled();
     }
 
     public LicenseVerifier getLicenseVerifier() {

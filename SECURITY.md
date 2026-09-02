@@ -14,6 +14,18 @@ Basic auth on the dashboard is rate limited per IP: 5 failed attempts in a 60-se
 
 ## Licensing
 
-Licenses use the SA2 format: `SA2-<base64(payload)>-<base64(Ed25519 signature)>` with payload `2|<licensee>|<expiry ISO-8601>|<fingerprint|ANY>`.
+Licenses use the SA2 format (see `docs/LICENSE-SYSTEM.md` for the full spec):
+`SA2.<base64url(payload)>.<base64url(Ed25519 signature)>` with the 6-field
+payload `2|<customer>|<expiry YYYY-MM-DD or PERPETUAL>|<fingerprint 16-hex or ANY>|<product>|<nonce 16-hex>`.
 
-Verification is asymmetric: the runtime verifier only needs the PUBLIC Ed25519 key via `SOLIDUS_LICENSE_PUBLIC_KEY` (base64 X.509 SubjectPublicKeyInfo). The private signing key never leaves the issuer's machine and is used exclusively by `tools/LicenseIssuer.java` on a trusted, offline-capable machine. A private key must never be included in the public mod JAR or repository, and legacy SA1 keys (which required a client-held HMAC secret and were forgeable by design) are rejected outright.
+Verification is asymmetric AND anchored to an EMBEDDED key (audit round 2):
+the runtime verifier trusts ONLY the vendor public key compiled into the JAR
+(`SA2_PUBLIC_KEY_B64` in `LicenseVerifier.java`, replaced by the vendor at
+build time per LICENSE-SYSTEM.md §3). The `SOLIDUS_LICENSE_PUBLIC_KEY` env
+var and `solidus.license.publicKey` system property are **ignored** in
+production - a customer-settable verification key would allow self-signed
+licenses (the exact SA1 flaw SA2 was designed to remove). While the embedded
+key is still the placeholder, every SA2 key fails CLOSED with a clear log
+message. The private signing key never leaves the issuer's machine
+(`tools/license/SolidusLicenseTool.java`). Legacy SA1 keys and the retired
+4-field dash-format `SA2-` keys are rejected outright.

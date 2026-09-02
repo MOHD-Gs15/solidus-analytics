@@ -196,7 +196,10 @@ public final class SolidusIntegration {
         }
     }
 
-    /** Offline transfer between two players; reflects TransferResult.success(). */
+    /** Offline transfer between two players; reflects TransferResult.success().
+     *  D-4 fix: an unreadable result is UNKNOWN (null), never success - the
+     *  cloud router maps null to E_EXEC so money is never acked as delivered
+     *  when the Core write outcome could not be confirmed. */
     public Boolean transferOffline(UUID fromUuid, String fromName, UUID toUuid, String toName,
                                    double amount, int timeoutSeconds) {
         if (!SolidusIntegration.isAvailable() || this.transferOfflineMethod == null) {
@@ -211,10 +214,15 @@ public final class SolidusIntegration {
             }
             try {
                 Object success = result.getClass().getMethod("success").invoke(result);
-                return success instanceof Boolean b ? b : Boolean.TRUE;
+                if (success instanceof Boolean b) {
+                    return b;
+                }
+                SolidusAnalyticsMod.LOGGER.warn("[Cloud] transferOffline: TransferResult.success() is not a Boolean - treating outcome as UNKNOWN");
+                return null;
             }
-            catch (Exception ignored) {
-                return Boolean.TRUE;
+            catch (Exception e) {
+                SolidusAnalyticsMod.LOGGER.warn("[Cloud] transferOffline: could not read TransferResult.success() ({}) - treating outcome as UNKNOWN", (Object)e.toString());
+                return null;
             }
         }
         catch (Exception e) {

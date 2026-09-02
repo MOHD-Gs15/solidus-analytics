@@ -84,6 +84,11 @@ public final class CloudAgent implements CloudCommandRouter.Sink, TelemetryColle
             SolidusAnalyticsMod.LOGGER.info("[Cloud] Cloud agent disabled (cloud.enabled=false). Pair first, then flip the flag.");
             return;
         }
+        if (this.config.isInsecureRelayRejected()) {
+            // B-3: stay off rather than ship the pairing secret in cleartext.
+            SolidusAnalyticsMod.LOGGER.error("[Cloud] Agent stays off: plaintext ws:// relay refused (PROTOCOL.md §1). Switch cloud.relayUrl to wss:// or set cloud.allowInsecureRelay=true for local testing.");
+            return;
+        }
         try {
             this.store = new CloudAgentStore(this.configDir);
             this.store.initialize();
@@ -104,7 +109,7 @@ public final class CloudAgent implements CloudCommandRouter.Sink, TelemetryColle
             t.setDaemon(true);
             return t;
         });
-        this.client = new CloudRelayClient(this.config, this::onFrame, this::onReady);
+        this.client = new CloudRelayClient(this.config, this::onFrame, this::onReady, this::helloJson);
         int fast = this.config.getFastIntervalSeconds();
         int econ = this.config.getEconomyIntervalSeconds();
         int slow = this.config.getSlowIntervalSeconds();
@@ -113,7 +118,7 @@ public final class CloudAgent implements CloudCommandRouter.Sink, TelemetryColle
         this.cloudExec.scheduleAtFixedRate(this::slowCycle, slow, slow, TimeUnit.SECONDS);
         this.cloudExec.scheduleAtFixedRate(() -> this.store.prune(48L * 3600000L, this.engine.getConfig().getDataRetentionDays()),
             1L, 24L, TimeUnit.HOURS);
-        this.client.start(this.helloJson());
+        this.client.start(null);
         this.started = true;
         SolidusAnalyticsMod.LOGGER.info("[Cloud] Agent started: serverId={} relay={} (commands: {}, core: {})",
             (Object)this.config.getServerId(), (Object)this.config.getRelayUrl(),
@@ -628,7 +633,14 @@ public final class CloudAgent implements CloudCommandRouter.Sink, TelemetryColle
         }
         String fresh = sb.toString();
         this.config.setPairingSecret(fresh);
-        this.client.forceReconnect();
+        // B-1 fix: the secret must NEVER travel in the command result - that
+        // path is persisted to cloud_command_log, the relay's audit ledger and
+        // broadcast as cmd.audit to every connected client (§12/§6.7), i.e.
+        // readable by roles below owner. The operator reads it from the local
+        // 0600 config file (or this single log line on the server they own).
+        SolidusAnalyticsMod.LOGGER.warn("[Cloud] Pairing secret rotated. New secret (also in {}): {}",
+            (Object)this.configDir.resolve("cloud.properties").toAbsolutePath(), (Object)fresh);
+        this.client.forceReconnect();  // B-5: re-hellos with the fresh secret via the hello supplier
         return fresh;
     }
 }

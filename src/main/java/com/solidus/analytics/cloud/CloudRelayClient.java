@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -48,6 +49,7 @@ public final class CloudRelayClient {
     private final CloudAgentConfig config;
     private final Consumer<String> incoming;      // full frames from relay
     private final Runnable onReady;
+    private final Supplier<String> helloSupplier;  // fresh hello per (re)connect (B-5)
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean ready = new AtomicBoolean(false);
     private final AtomicBoolean broken = new AtomicBoolean(false);
@@ -62,16 +64,24 @@ public final class CloudRelayClient {
     private long lastHbMs = 0L;
 
     public CloudRelayClient(CloudAgentConfig config, Consumer<String> incoming, Runnable onReady) {
+        this(config, incoming, onReady, () -> null);
+    }
+
+    /** Full constructor: {@code helloSupplier} is consulted on EVERY (re)connect
+     *  so rotations (pairing.rotate) re-hello with the CURRENT secret (audit B-5). */
+    public CloudRelayClient(CloudAgentConfig config, Consumer<String> incoming, Runnable onReady,
+                            Supplier<String> helloSupplier) {
         this.config = config;
         this.incoming = incoming;
         this.onReady = onReady;
+        this.helloSupplier = helloSupplier;
     }
 
     public void start(String helloJson) {
         if (this.running.getAndSet(true)) {
             return;
         }
-        this.controlThread = new Thread(() -> this.loop(helloJson), "solidus-cloud-relay");
+        this.controlThread = new Thread(() -> this.loop(), "solidus-cloud-relay");
         this.controlThread.setDaemon(true);
         this.controlThread.start();
     }
@@ -158,12 +168,12 @@ public final class CloudRelayClient {
 
     // ---- control loop ----------------------------------------------------
 
-    private void loop(String helloJson) {
+    private void loop() {
         int backoffIdx = 0;
         while (this.running.get()) {
             this.broken.set(false);
             try {
-                this.connect(helloJson);
+                this.connect(this.hello());
                 backoffIdx = 0;
                 while (this.running.get() && !this.broken.get() && this.ready.get()) {
                     long now = System.currentTimeMillis();
@@ -198,6 +208,11 @@ public final class CloudRelayClient {
                 return;
             }
         }
+    }
+
+    private String hello() {
+        String fresh = this.helloSupplier != null ? this.helloSupplier.get() : null;
+        return fresh;
     }
 
     private void connect(String helloJson) throws Exception {
@@ -277,6 +292,10 @@ public final class CloudRelayClient {
 
     private final class RelayListener implements WebSocket.Listener {
         private final StringBuilder partial = new StringBuilder();
+        /** B-11 fix: relay frames are small JSON envelopes - 1 MiB is ~1000x the
+         *  largest legitimate message. A hostile relay streaming a giant frame
+         *  must not be able to OOM the game server. */
+        private static final int MAX_FRAME_CHARS = 1024 * 1024;
 
         @Override
         public void onOpen(WebSocket webSocket) {
@@ -286,6 +305,17 @@ public final class CloudRelayClient {
 
         @Override
         public java.util.concurrent.CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+            if (this.partial.length() + data.length() > MAX_FRAME_CHARS) {
+                SolidusAnalyticsMod.LOGGER.warn("[Cloud] relay frame exceeds 1 MiB - dropping connection");
+                this.partial.setLength(0);
+                CloudRelayClient.this.broken.set(true);
+                try {
+                    webSocket.abort();
+                }
+                catch (Throwable ignored) {
+                }
+                return null;
+            }
             this.partial.append(data);
             if (last) {
                 String frame = this.partial.toString();
@@ -336,10 +366,22 @@ public final class CloudRelayClient {
                 this.broken.set(true);
                 return;
             }
+            // B-3 fix: the relay only earns the right to send us commands AFTER
+            // it authenticated itself against our pairing secret in hello.
+            // Frames before hello.ok are dropped (a spoofed/MITM peer must not
+            // be able to push owner-level commands onto an unauthenticated socket).
+            if (!this.ready.get()) {
+                SolidusAnalyticsMod.LOGGER.warn("[Cloud] dropping frame received before hello.ok");
+                return;
+            }
             this.incoming.accept(frame);
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] bad frame from relay: {}", (Object)e.toString());
+        }
+        catch (StackOverflowError so) {
+            // B-11: deeply nested JSON can blow the stack before the size cap bites.
+            SolidusAnalyticsMod.LOGGER.warn("[Cloud] oversized/malformed frame from relay dropped");
         }
     }
 
