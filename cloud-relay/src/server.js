@@ -19,9 +19,11 @@ const { WebSocketServer } = require('ws');
 const { config, COMMAND_META, RANK } = require('./config');
 const { Store } = require('./store');
 const { AlertEngine, pushReady } = require('./alerts');
+const { LoginLimiter } = require('./login-limiter');
 
 const store = new Store();
 const alerts = new AlertEngine(store);
+const loginLimiter = new LoginLimiter();
 
 // ---- live state -----------------------------------------------------------
 
@@ -31,6 +33,7 @@ const idemCache = new Map();      // `${userId}:${cmd}:${idemKey}` -> result
 const prepareTokens = new Map();  // token -> { userId, cmd, target, preparedAt }
 const rate = new Map();           // userId -> { financial:[], w2:[], w1:[], r:[], d:[], broadcast:[] }
 const pending = new Map();        // rid -> { ws (originator), userId }
+const wsTickets = new Map();      // ticket -> { sessionToken, userId, expiresAt }  (single-use, P1-5)
 
 setInterval(() => store.pruneAudit(), 12 * 3600 * 1000).unref();
 
@@ -73,6 +76,48 @@ function pushRate(list, max, windowMs = 60000) {
 function rateOf(userId) {
   if (!rate.has(userId)) rate.set(userId, { financial: [], w2: [], w1: [], r: [], d: [], broadcast: [] });
   return rate.get(userId);
+}
+
+// ---------- security headers (audit P0-1) ------------------------------------
+
+// Same hardening the local dashboard already ships, applied to every relay
+// HTTP response. The PWA loads only same-origin assets and speaks to this
+// relay over WebSocket, so connect-src allows ws/wss ONLY for the serving
+// host. The Host header is sanitized to a strict charset - a hostile value
+// can only ever affect the caller's own response, never another session's
+// policy. API responses additionally get no-store.
+function applySecurityHeaders(req, res, isApi) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  const host = String(req.headers.host || 'localhost').replace(/[^a-zA-Z0-9.:\-_]/g, '') || 'localhost';
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    + `connect-src 'self' ws://${host} wss://${host}; frame-ancestors 'none'; `
+    + "base-uri 'none'; form-action 'self'; object-src 'none'");
+  if (isApi) res.setHeader('Cache-Control', 'no-store');
+}
+
+// ---------- WebSocket upgrade tickets (audit P1-5) ----------------------------
+
+// Long-lived session tokens must not travel in the WS URL (they leak into
+// proxy and media logs). The PWA exchanges its Bearer token for a 30-second
+// single-use ticket, then opens the socket with ?ticket=. The session token
+// itself never crosses the wire again.
+function issueWsTicket(sessionToken, userId) {
+  const ticket = 'wt-' + crypto.randomBytes(32).toString('hex');
+  wsTickets.set(ticket, { sessionToken, userId, expiresAt: nowMs() + config.wsTicketTtlMs });
+  return { ticket, expiresAt: nowMs() + config.wsTicketTtlMs };
+}
+
+function consumeWsTicket(ticket) {
+  if (!ticket) return null;
+  const t = wsTickets.get(ticket);
+  wsTickets.delete(ticket); // single-use, always
+  if (!t || nowMs() > t.expiresAt || !t.sessionToken) return null;
+  // re-validate the underlying session (expiry / revocation still apply)
+  return store.findUserByToken(t.sessionToken);
 }
 
 function limitFor(meta, cmd) {
@@ -263,7 +308,7 @@ function relaySideCommand(ws, client, frame) {
     case 'audit.query':
       return done('applied', { rows: store.auditQuery({ ...args, limit: args?.limit || 100 }) });
     case 'audit.export':
-      return done('applied', { format: args?.format || 'json', rows: store.auditQuery({ ...args, limit: 5000 }) });
+      return done('applied', { format: args?.format || 'json', rows: store.auditQuery({ ...args, limit: 2000 }) });
     case 'alert.silence': {
       store.alerts.silenceUntil = nowMs() + Math.min(1440, Math.max(5, args?.minutes || 30)) * 60000;
       store.saveAlerts();
@@ -392,8 +437,10 @@ function setupAgentSocket(wss) {
 function setupClientSocket(wss) {
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
-    const token = url.searchParams.get('token');
-    const found = store.findUserByToken(token);
+    // audit P1-5: the long-lived token is no longer accepted on the socket;
+    // only short-lived single-use tickets are (see /api/ws-ticket).
+    if (url.searchParams.get('token')) { ws.close(4001, 'token-in-url rejected'); return; }
+    const found = consumeWsTicket(url.searchParams.get('ticket'));
     if (!found) { ws.close(4001, 'auth'); return; }
     const client = {
       user: found.user, role: found.user.role, serverId: null, dev: found.session.dev,
@@ -453,20 +500,39 @@ function authUser(req) {
 
 const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+  applySecurityHeaders(req, res, url.pathname.startsWith('/api/'));
   try {
     if (req.method === 'POST' && url.pathname === '/api/login') {
       const { name, password } = await readBody(req);
+      const ip = req.socket.remoteAddress || '';
+      // audit P0-2: lockout check BEFORE scrypt so a blocked source cannot
+      // pin the relay CPU on password derivations, and guessing is capped.
+      if (loginLimiter.isBlocked(ip, name)) {
+        store.audit({ kind: 'auth', actorName: name || null, status: 'rejected', code: 'E_LOCKOUT' });
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(Math.max(1, Math.ceil(loginLimiter.getRemainingLockMs(ip, name) / 1000))) });
+        return res.end(j({ error: 'too many failed attempts' }));
+      }
       const user = store.findUser(String(name || ''));
       if (!user || !store.verifyPassword(user, password)) {
+        loginLimiter.recordFailure(ip, name);
         store.audit({ kind: 'auth', actorName: name, status: 'rejected' });
         res.writeHead(401, { 'Content-Type': 'application/json' });
         return res.end(j({ error: 'bad credentials' }));
       }
+      loginLimiter.recordSuccess(ip, user.name);
       const sess = store.createSession(user, req.headers['user-agent']?.slice(0, 40) || 'unknown');
       store.audit({ kind: 'auth', actorName: user.name, status: 'login', dev: sess.dev });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(j({ token: sess.token, user: user.name, role: user.role }));
+    }
+    // audit P1-5: exchange the Bearer session token for a 30 s single-use
+    // WebSocket ticket; the token itself never rides a URL again.
+    if (req.method === 'POST' && url.pathname === '/api/ws-ticket') {
+      const found = authUser(req);
+      if (!found) { res.writeHead(401); return res.end('{}'); }
+      const { ticket, expiresAt } = issueWsTicket(found.session.token, found.user.id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(j({ ticket, expiresAt }));
     }
     if (url.pathname === '/api/state') {
       const found = authUser(req);
@@ -527,11 +593,12 @@ httpServer.on('upgrade', (req, socket, head) => {
 setupAgentSocket(agentWss);
 setupClientSocket(clientWss);
 
-// prune stale idem cache
+// prune stale idem cache + expired ws tickets
 setInterval(() => {
   const cutoff = nowMs() - config.idemCacheMs;
   for (const [k, v] of idemCache) if (v.at < cutoff) idemCache.delete(k);
   for (const [k, v] of prepareTokens) if (v.validUntil < nowMs()) prepareTokens.delete(k);
+  for (const [k, v] of wsTickets) if (v.expiresAt < nowMs()) wsTickets.delete(k);
 }, 60000).unref();
 
 httpServer.listen(config.port, config.host, () => {

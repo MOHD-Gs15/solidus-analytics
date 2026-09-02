@@ -11,9 +11,19 @@ import java.util.List;
 import java.util.Map;
 
 public class DashboardDataBuilder {
+    /**
+     * Contract version of the /api/data JSON payload (audit 12.1 exit
+     * criterion #3): consumers (local web app, encrypted GitHub Pages
+     * channel, any future external reader) may branch on this number; any
+     * breaking field rename or removal MUST bump it. Additive-only changes
+     * keep version 1.
+     */
+    public static final long SCHEMA_VERSION = 1L;
+
     public static String buildJson(AnalyticsEngine engine) {
         StringBuilder json = new StringBuilder();
         json.append("{");
+        json.append("\"schemaVersion\":").append(DashboardDataBuilder.SCHEMA_VERSION).append(",");
         json.append("\"timestamp\":").append(System.currentTimeMillis()).append(",");
         json.append("\"server\":{");
         json.append("\"name\":").append(DashboardDataBuilder.escapeJson(DashboardDataBuilder.getServerName(engine))).append(",");
@@ -251,7 +261,11 @@ public class DashboardDataBuilder {
                 }
                 default: {
                     if (c < ' ') {
-                        sb.append(String.format("\\u%04x", c));
+                        // Fix (audit P1, found by the contract test): %04x
+                        // rejects a boxed Character - a control char in any
+                        // player string used to throw here and kill the whole
+                        // dashboard payload. Cast to int first.
+                        sb.append(String.format("\\u%04x", (int) c));
                         continue block7;
                     }
                     sb.append(c);

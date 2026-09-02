@@ -153,15 +153,19 @@ Every frame (either direction, both sockets) is a single JSON object:
 
 ### 4.2 Client → relay (`/app`)
 
-1. Connect `wss://relay/app`.
-2. Client authenticates once per connection:
-   `{ "sv":1, "id":"m-c1", "t":"evt", "type":"auth", "d":{ "token":"<session token>" } }`
-   (token obtained from `POST /api/login` with username+password; tokens expire 30 d and
-   are revocable — `session.revoke`).
-3. Relay replies `auth.ok{ user, role, servers:[{serverId,name,online,entitled}] }` and
+1. Client obtains a session token from `POST /api/login` (username+password; tokens
+   expire 30 d and are revocable — `session.revoke`). Login is rate-limited per IP and
+   per account name (5 failures / 60 s → 5 min lockout, §11).
+2. Client exchanges the token for a **single-use WebSocket ticket**:
+   `POST /api/ws-ticket` (Bearer) → `{ ticket, expiresAt }`. Tickets live 30 s.
+3. Connect `wss://relay/app?ticket=<ticket>` — the ticket is consumed by the upgrade;
+   it cannot be replayed, and long-lived tokens never appear in URLs (proxy/media log
+   leakage). Passing `?token=` is rejected outright (close 4001).
+4. Relay replies `auth.ok{ user, role, servers:[{serverId,name,online,entitled}] }` and
    floods the ring-buffer tail for the user's currently selected server (≤ 200 events,
    §6.7) so the UI is warm instantly.
-4. Client switches servers with `select{serverId}`; relay re-points the event feed.
+5. Client switches servers with `select{serverId}`; relay re-points the event feed.
+6. On reconnect, the client fetches a fresh ticket first (same flow).
 
 ### 4.3 Ordering
 
@@ -434,6 +438,21 @@ relay-configurable (`relay.limits.*`) for testing.
   `reveal:true` (admin+) → audit row `ip.reveal` with full address, target, actor.
 - **No privilege grants** (G5): no such command id exists; `agent.security.change`
   alerts on ops/whitelist/mod-list changes.
+- **HTTP edge hardening** (audit P0): every relay HTTP response carries
+  `Content-Security-Policy` (default-src 'self'; connect-src allows ws/wss only for
+  the serving host), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin`; API
+  responses add `Cache-Control: no-store`.
+- **Login throttling** (audit P0): `POST /api/login` is rate-limited per source IP AND
+  per account name — 5 failed attempts inside a sliding 60 s window lock both keys for
+  5 minutes. The lockout check runs BEFORE the scrypt derivation (cheap rejection —
+  request floods cannot pin the relay CPU), successful login clears the counters, and
+  lockouts are audited as `auth` rows with code `E_LOCKOUT`. State is in-memory by
+  design: a relay restart gives a clean slate (never a permanently locked-out owner).
+- **WebSocket tickets** (audit P1): long-lived session tokens never travel in URLs.
+  `POST /api/ws-ticket` (Bearer) mints a 30-second single-use ticket that authenticates
+  the `/app` upgrade; the underlying session is re-validated at consumption (expiry and
+  revocation still apply).
 
 ## 12. Audit
 
@@ -442,6 +461,11 @@ relay-configurable (`relay.limits.*`) for testing.
   role,dev}, receivedAt, status, code, resultData, expiresAt, idemKey, serverId`.
   Rows are immutable from the API; `audit.query` reads, `audit.export` dumps (CSV/JSON).
   Retention ≥ 90 days.
+- **Query cost model** (audit P1): `audit.query` scans the ledger BACKWARD from the
+  file tail in 64 KiB chunks (newest-first, early-stop once rows are older than
+  `fromMs`) instead of loading the whole file; response time stays flat as the ledger
+  grows to hundreds of thousands of rows. Caps: `audit.query` ≤ 200 rows,
+  `audit.export` ≤ 2000 rows.
 - **Agent mirror**: terminal outcomes are written to the agent's own `cloud.db`
   (`cloud_command_log`) so the server owner holds a local, tamper-resistant copy
   even if the relay is wiped.

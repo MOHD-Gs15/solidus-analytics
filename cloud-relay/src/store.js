@@ -145,20 +145,63 @@ class Store {
     fs.appendFileSync(this.auditPath, line + '\n');
   }
 
+  /**
+   * Backward tail scan (audit P1-6): rows are needed newest-first and the
+   * ledger is append-only in chronological order, so we read 64 KiB chunks
+   * from the END of the file instead of loading the whole ledger. Once a row
+   * is older than fromMs, every earlier row is older too -> stop scanning.
+   * Splitting on 0x0A operates on raw Buffers, so multi-byte UTF-8 sequences
+   * split across chunk boundaries stay intact.
+   */
   auditQuery({ fromMs, toMs, actor, cmd, target, limit = 100 }) {
+    const max = Math.min(limit, 2000);
     const rows = [];
-    const text = fs.readFileSync(this.auditPath, 'utf8');
-    for (const line of text.split('\n').reverse()) {
-      if (!line.trim()) continue;
+    let fd;
+    try { fd = fs.openSync(this.auditPath, 'r'); } catch { return rows; }
+    const CHUNK = 64 * 1024;
+    const matches = (r) => (!toMs || r.ts <= toMs)
+      && (!actor || r.actorName === actor)
+      && (!cmd || r.cmd === cmd)
+      && (!target || r.target === target);
+    let stop = false;
+    const consider = (buf) => {
       let r;
-      try { r = JSON.parse(line); } catch { continue; }
-      if (fromMs && r.ts < fromMs) continue;
-      if (toMs && r.ts > toMs) continue;
-      if (actor && r.actorName !== actor) continue;
-      if (cmd && r.cmd !== cmd) continue;
-      if (target && r.target !== target) continue;
-      rows.push(r);
-      if (rows.length >= Math.min(limit, 200)) break;
+      try { r = JSON.parse(buf.toString('utf8')); } catch { return; }
+      if (fromMs && r.ts < fromMs) { stop = true; return; }
+      if (matches(r)) rows.push(r);
+    };
+    try {
+      const size = fs.fstatSync(fd).size;
+      let pos = size;
+      let pendingHead = Buffer.alloc(0); // earliest incomplete line fragment
+      while (pos > 0 && !stop && rows.length < max) {
+        const read = Math.min(CHUNK, pos);
+        pos -= read;
+        const chunk = Buffer.allocUnsafe(read);
+        fs.readSync(fd, chunk, 0, read, pos);
+        const combined = pendingHead.length ? Buffer.concat([chunk, pendingHead]) : chunk;
+        const nl = combined.indexOf(0x0a);
+        if (nl === -1) {
+          // a single line larger than the chunk: keep accumulating backward
+          pendingHead = combined;
+          continue;
+        }
+        pendingHead = combined.subarray(0, nl);
+        // everything after the first newline is complete lines; the trailing
+        // split element is '' when the window ends at a line boundary.
+        const lines = combined.subarray(nl + 1).toString('utf8').split('\n');
+        for (let i = lines.length - 1; i >= 0 && !stop && rows.length < max; i--) {
+          if (!lines[i]) continue;
+          let r;
+          try { r = JSON.parse(lines[i]); } catch { continue; }
+          if (fromMs && r.ts < fromMs) { stop = true; break; }
+          if (matches(r)) rows.push(r);
+        }
+      }
+      // pos == 0: the pending head IS the file's first line.
+      if (!stop && rows.length < max && pendingHead.length) consider(pendingHead);
+    } finally {
+      fs.closeSync(fd);
     }
     return rows;
   }

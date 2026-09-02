@@ -101,17 +101,35 @@ async function main() {
       });
     });
 
-    // 4) fake client: login then connect
+    // 4) fake client: login -> ws ticket -> connect (audit P1-5)
     const login = await (await fetch(`http://127.0.0.1:${PORT}/api/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'owner', password: 'test-pass-123' }),
     })).json();
     assert(login.token && login.role === 'owner', 'client login ok (owner)');
 
-    const client = new WS(`${WS_BASE}/app?token=${login.token}`);
+    const tkt = await (await fetch(`http://127.0.0.1:${PORT}/api/ws-ticket`, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + login.token },
+    })).json();
+    assert(tkt.ticket && tkt.expiresAt > Date.now(), 'ws-ticket issued (30 s single-use)');
+
+    const client = new WS(`${WS_BASE}/app?ticket=${tkt.ticket}`);
     await client.open;
     const authOk = await client.once('auth.ok');
     assert(authOk && authOk.d.servers[0].serverId === 'srv-test01' && authOk.d.servers[0].online, 'auth.ok shows paired server online');
+
+    // 4b) the ticket was single-use and the old token-in-URL path is closed
+    const staleTicket = new WS(`${WS_BASE}/app?ticket=${tkt.ticket}`);
+    await staleTicket.open;
+    const staleAuth = await staleTicket.once('auth.ok', 1200);
+    assert(!staleAuth, 'ticket is single-use (second use rejected)');
+    staleTicket.close();
+
+    const tokenUrl = new WS(`${WS_BASE}/app?token=${login.token}`);
+    await tokenUrl.open;
+    const tokenAuth = await tokenUrl.once('auth.ok', 1200);
+    assert(!tokenAuth, 'token-in-URL rejected on the socket');
+    tokenUrl.close();
 
     client.send({ sv: 1, id: 'm-c0', t: 'evt', type: 'select', d: { serverId: 'srv-test01' } });
     const evt = await client.once('health.tps');

@@ -1,6 +1,7 @@
 /* Solidus Cloud PWA - client application.
  * Speaks the v1 protocol to the relay (see docs/cloud/PROTOCOL.md):
- * login -> token -> wss /app -> select server -> live events + commands
+ * login -> Bearer token -> POST /api/ws-ticket (30 s single-use) -> wss /app
+ * -> select server -> live events + commands
  * with risk-tiered confirmations (W2 typed name, D prepare-token + password + hold). */
 'use strict';
 
@@ -92,8 +93,21 @@ async function startApp() {
 }
 
 // ---------- websocket ----------
-function connectWs() {
-  WS = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/app?token=${TOKEN}`);
+// audit P1-5: the long-lived session token never rides the URL. Each socket
+// (and each reconnect) exchanges the Bearer token for a 30 s single-use
+// ticket first; if the session died we fall back to the login screen.
+async function connectWs() {
+  let ticket;
+  try {
+    const r = await fetch('/api/ws-ticket', { method: 'POST', headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!r.ok) { localStorage.removeItem('sc_token'); location.reload(); return; }
+    ticket = (await r.json()).ticket;
+  } catch {
+    $('conn-badge').textContent = 'offline';
+    $('conn-badge').className = 'badge off';
+    return setTimeout(connectWs, 3000);
+  }
+  WS = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/app?ticket=${ticket}`);
   WS.onopen = () => { $('conn-badge').textContent = 'connected'; $('conn-badge').className = 'badge on'; };
   WS.onclose = () => {
     $('conn-badge').textContent = 'offline';
@@ -349,7 +363,8 @@ function esc(s) {
 }
 
 // ---------- push enrollment ----------
-$('push-enroll').addEventListener('click', async () => {
+$('push-enroll').addEventListener('click', async (e) => {
+  e.preventDefault();
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return toast('push not supported on this browser');
   const reg = await navigator.serviceWorker.register('/sw.js');
   const r = await fetch('/api/state', { headers: { Authorization: 'Bearer ' + TOKEN } });

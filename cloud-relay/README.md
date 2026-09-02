@@ -9,6 +9,14 @@ Responsibilities (v1):
 - **Agent endpoint** `wss://…/agent` — the mod dials *out* to this; pairing is
   `serverId + 64-hex secret` (the relay stores only `sha256(secret)`).
 - **Client endpoint** `wss://…/app` + PWA static hosting at `/`.
+- **HTTP edge hardening** — CSP (same-origin + host-bound ws/wss),
+  `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, CORP; API responses are
+  `no-store`.
+- **Login throttling** — 5 failed logins per IP *and* per account name in 60 s
+  locks both for 5 minutes (checked BEFORE scrypt; audited as `E_LOCKOUT`).
+- **WebSocket tickets** — `POST /api/ws-ticket` (Bearer) mints a 30 s
+  single-use ticket that authenticates the `/app` upgrade; long-lived tokens
+  never ride URLs.
 - **Store & forward** — 200-event ring buffer per server; offline command queue
   bounded by command TTL (60 s / 90 s for D-class).
 - **Allow-list + roles + entitlement** — every command id in the catalog has a
@@ -21,7 +29,8 @@ Responsibilities (v1):
   additionally keeps a 48 h persistent window in `cloud.db`).
 - **Rate ceilings** — grants ≤ 10/min, W1 ≤ 30/min, D ≤ 3/h, etc.
 - **Authoritative audit ledger** — append-only `data/audit.jsonl`, queryable
-  from the PWA, retained 90 days.
+  from the PWA with a backward tail scan (flat response time as the ledger
+  grows; ≤ 200 rows per query, ≤ 2000 per export), retained 90 days.
 - **Alerts** — rule engine on the live event stream (TPS/RAM/CPU), built-in
   `agent.heartbeat.lost` after 120 s of silence, Web Push delivery when VAPID
   keys are configured.
@@ -74,10 +83,13 @@ The agent logs `serverId` + `pairingSecret` on first boot.
 ## Test
 
 ```bash
-npm run smoke    # end-to-end: fake agent + fake client + W2/D confirm flow + audit
+npm test       # smoke (end-to-end: fake agent + fake client + W2/D confirm flow + audit)
+               # + security (headers, login lockout, ticket single-use)
+npm run smoke  # the smoke half alone
 ```
 
 ## Roadmap (relay-side)
 
 Stripe-backed entitlement (v1 ships the manual flag), Discord DM bot,
-HTTPS long-poll fallback for pathological networks, per-message HMAC signing.
+HTTPS long-poll fallback for pathological networks, per-message HMAC signing,
+migration of the JSON store to SQLite (audit P2).
