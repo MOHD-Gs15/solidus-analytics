@@ -26,8 +26,8 @@ Real-time economic telemetry · AES-256-GCM encrypted publishing · Zero client 
   "runtimePlatform": "Fabric Loader 0.19.4+",
   "license": "MIT",
   "description": "Server-side economy intelligence layer for Solidus Core: wealth snapshots, inflation tracking, Gini inequality, health scoring, fraud detection, and a live web dashboard. No client mods required.",
-  "author": { "@type": "Person", "name": "MOHD_Gs", "url": "https://github.com/mohd-gs" },
-  "url": "https://github.com/mohd-gs/solidus-analytics",
+  "author": { "@type": "Person", "name": "MOHD-Gs15", "url": "https://github.com/MOHD-Gs15" },
+  "url": "https://github.com/MOHD-Gs15/solidus-analytics",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
 -->
@@ -59,11 +59,11 @@ Solidus Analytics is the intelligence layer of the **Solidus Economy Ecosystem**
 
 | Module | License | Description |
 |--------|---------|-------------|
-| [solidus-core](https://github.com/mohd-gs/solidus-core) | MIT | Economy engine, server shop, auction house |
+| [solidus-core](https://github.com/MOHD-Gs15/solidus-core) | MIT | Economy engine, server shop, auction house |
 | **solidus-analytics** | MIT | **Economy intelligence dashboard, inflation tracking, fraud detection** (this repo) |
-| [Solidus-Enforcer](https://github.com/mohd-gs/Solidus-Enforcer) | MIT | Bounty hunting, hunter license system, alliance rewards, autonomous anti-monopoly bounties |
-| [Solidus-Governance](https://github.com/mohd-gs/Solidus-Governance) | Proprietary | Economy administration, progressive taxation, immutable audit logging, point-in-time rollback recovery |
-| [solidus-territory](https://github.com/mohd-gs/solidus-territory) | MIT | Polygon-based land claiming, rent system, territory trading, visual particle borders |
+| [Solidus-Enforcer](https://github.com/MOHD-Gs15/Solidus-Enforcer) | MIT | Bounty hunting, hunter license system, alliance rewards, autonomous anti-monopoly bounties |
+| [Solidus-Governance](https://github.com/MOHD-Gs15/Solidus-Governance) | Proprietary | Economy administration, progressive taxation, immutable audit logging, point-in-time rollback recovery |
+| [solidus-territory](https://github.com/MOHD-Gs15/solidus-territory) | MIT | Polygon-based land claiming, rent system, territory trading, visual particle borders |
 
 Analytics integrates with Solidus Core through a **reflection-based bridge** and read-only SQLite access — zero compile dependency, automatic activation when Core is present, graceful degradation when absent.
 
@@ -134,8 +134,8 @@ Solidus Analytics never requires Solidus Core to boot. The integration bridge re
 
 1. Install [Fabric Loader](https://fabricmc.net/use/) on your server
 2. Install [Fabric API](https://modrinth.com/mod/fabric-api) on the server
-3. Install [Solidus Core](https://github.com/mohd-gs/solidus-core/releases) — Analytics reads its databases
-4. Download the latest Solidus Analytics release from [Releases](https://github.com/mohd-gs/solidus-analytics/releases)
+3. Install [Solidus Core](https://github.com/MOHD-Gs15/solidus-core/releases) — Analytics reads its databases
+4. Download the latest Solidus Analytics release from [Releases](https://github.com/MOHD-Gs15/solidus-analytics/releases)
 5. Place the `.jar` file into your server's `mods/` folder
 6. Start the server — configuration is generated at `config/solidus-analytics/analytics.properties`
 
@@ -334,7 +334,7 @@ Practically nothing on the tick thread: tick handlers do constant-time work, all
 
 | Platform | Link |
 | --- | --- |
-| GitHub Releases | [Latest Release](https://github.com/mohd-gs/solidus-analytics/releases) |
+| GitHub Releases | [Latest Release](https://github.com/MOHD-Gs15/solidus-analytics/releases) |
 | Modrinth | [MOHD_Gs on Modrinth](https://modrinth.com/user/MOHD_Gs) |
 
 ---
@@ -343,7 +343,7 @@ Practically nothing on the tick thread: tick handlers do constant-time work, all
 
 Contributions are welcome.
 
-* Report issues via [GitHub Issues](https://github.com/mohd-gs/solidus-analytics/issues)
+* Report issues via [GitHub Issues](https://github.com/MOHD-Gs15/solidus-analytics/issues)
 * Suggest features or improvements
 * Submit pull requests
 
@@ -363,4 +363,4 @@ This project is licensed under the **MIT License** — see [LICENSE](LICENSE) fo
 
 ---
 
-Built by [MOHD_Gs](https://github.com/mohd-gs) · [Email](mailto:mohdmxmxm@gmail.com) · Discord: **mohd_gs** · Part of the [Solidus Economy Ecosystem](https://github.com/mohd-gs)
+Built by [MOHD-Gs15](https://github.com/MOHD-Gs15) · [Email](mailto:mohdmxmxm@gmail.com) · Discord: **mohd_gs** · Part of the [Solidus Economy Ecosystem](https://github.com/MOHD-Gs15)

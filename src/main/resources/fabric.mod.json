@@ -4,7 +4,7 @@
   "version": "${version}",
   "name": "Solidus Analytics",
   "description": "Server-side economy analytics and health dashboard for Solidus.",
-  "authors": ["MOHD_Gs"],
+  "authors": ["MOHD-Gs15"],
   "contact": {
     "sources": "https://github.com/MOHD-Gs15/solidus-analytics"
   },
