@@ -3,10 +3,15 @@
 
 const path = require('node:path');
 
+const dataDir = process.env.RELAY_DATA_DIR || path.join(__dirname, '..', 'data');
+
 const config = {
   port: Number(process.env.RELAY_PORT || 8787),
   host: process.env.RELAY_HOST || '0.0.0.0',
-  dataDir: process.env.RELAY_DATA_DIR || path.join(__dirname, '..', 'data'),
+  dataDir,
+  // P2 durable store (node:sqlite, WAL): event rings, offline command queue,
+  // financial idempotency. Survives relay restarts. Requires node >= 22.5.
+  dbPath: process.env.RELAY_DB_PATH || path.join(dataDir, 'relay.db'),
   publicDir: path.join(__dirname, '..', 'public'),
   allowInsecure: process.env.RELAY_ALLOW_INSECURE === 'true', // only behind a TLS-terminating proxy
   protoMin: 1,
@@ -28,6 +33,7 @@ const config = {
   auditRetentionDays: 90,
   idemCacheMs: 10 * 60_000,         // §8
   commandTtlMs: 60_000,             // §3 (D-class 90 s handled per command)
+  commandRetentionDays: 7,          // P2: done command rows kept for forensics
   vapid: {
     publicKey: process.env.VAPID_PUBLIC_KEY || '',
     privateKey: process.env.VAPID_PRIVATE_KEY || '',
