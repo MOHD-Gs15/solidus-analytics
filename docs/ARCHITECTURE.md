@@ -41,7 +41,7 @@
 
 ## 1. System Overview
 
-**Solidus-Analytics** is a server-side economy intelligence layer for Minecraft Fabric. It observes a running [Solidus Core](https://github.com/mohd-gs/solidus-core) economy and turns its transaction stream into operational insight: wealth snapshots with Gini inequality, live daily counters, inflation indicators, a weighted economy health score, fraud signals, and an authenticated single-page web dashboard with optional encrypted publishing to GitHub Pages.
+**Solidus-Analytics** is a server-side economy intelligence layer for Minecraft Fabric. It observes a running [Solidus Core](https://github.com/MOHD-Gs15/solidus-core) economy and turns its transaction stream into operational insight: wealth snapshots with Gini inequality, live daily counters, inflation indicators, a weighted economy health score, fraud signals, and an authenticated single-page web dashboard with optional encrypted publishing to GitHub Pages.
 
 The mod operates as a **read-only observer**: it opens Solidus Core's SQLite databases in query-only mode, polls the transaction log incrementally on a background worker, and writes all derived metrics into its own WAL-journaled database. It never mutates economy state — a bug in Analytics can lose analytics data, but never economy data.
 
@@ -1054,5 +1054,5 @@ Snapshots dominate: 48 `HOURLY` rows/day plus one `DAILY` row. The retention swe
 
 ---
 
-> **For questions, issues, or contributions**, visit [github.com/mohd-gs/solidus-analytics](https://github.com/mohd-gs/solidus-analytics)  
-> **Author**: MOHD_Gs | **License**: MIT | Part of the [Solidus Economy Ecosystem](https://github.com/mohd-gs)
+> **For questions, issues, or contributions**, visit [github.com/MOHD-Gs15/solidus-analytics](https://github.com/MOHD-Gs15/solidus-analytics)  
+> **Author**: MOHD-Gs15 | **License**: MIT | Part of the [Solidus Economy Ecosystem](https://github.com/MOHD-Gs15)
