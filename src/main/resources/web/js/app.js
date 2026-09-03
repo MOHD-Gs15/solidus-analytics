@@ -600,9 +600,21 @@
   }
 
   // ---------- CSV export --------------------------------------------------------
+  // Audit 4 / F-1 — spreadsheet formula injection guard (core 2.1.3
+  // TransactionLog.csvEscape parity): a cell that BEGINS with =, +, -, @,
+  // TAB or CR is passed through unquoted-and-executed by Excel/LibreOffice
+  // when an admin opens the export. Player-controlled fields (names from
+  // offline-mode servers, imported economy.db rows, alert descriptions)
+  // must never reach a privileged consumer as executable content, so such
+  // cells get a leading apostrophe — the standard neutralizing prefix.
+  const FORMULA_PREFIXES = new Set(['=', '+', '-', '@', '\t', '\r']);
   const csvCell = (value) => {
     const s = value == null ? '' : String(value);
-    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    const needsQuoting = /[",\n\r]/.test(s);
+    const formulaPrefix = s.length > 0 && FORMULA_PREFIXES.has(s[0]);
+    if (!needsQuoting && !formulaPrefix) return s;
+    const escaped = formulaPrefix ? `'${s}` : s;
+    return needsQuoting ? `"${escaped.replace(/"/g, '""')}"` : escaped;
   };
   // round floats to a stable precision: 0.16599999999999998 -> 0.166 keeps
   // the file machine-parsable without floating-point artifacts

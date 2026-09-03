@@ -1,5 +1,7 @@
 package com.solidus.analytics.storage;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -24,6 +26,12 @@ import java.sql.Statement;
  * <p>Connections are intentionally short-lived (one check, one scan): Core
  * owns these files, so Analytics must never hold a persistent handle that
  * could interfere with Core's own checkpointing.</p>
+ *
+ * <p><b>Audit 4 / F-3:</b> sqlite-jdbc's default open flags include CREATE,
+ * so {@code jdbc:sqlite:} on a MISSING path used to silently create an
+ * empty database file - the exact opposite of a read-only accessor. The
+ * {@link Files#isRegularFile} precondition makes a missing file an honest
+ * failure instead (callers treat it like any other scan error).</p>
  */
 public final class DirectDb {
 
@@ -38,6 +46,10 @@ public final class DirectDb {
      * @throws SQLException if the file cannot be opened or the pragmas fail
      */
     public static Connection openReadOnly(String dbPath) throws SQLException {
+        Path file = Path.of(dbPath);
+        if (!Files.isRegularFile(file)) {
+            throw new SQLException("Database file not found (refusing to create it): " + dbPath);
+        }
         Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
         try (Statement st = conn.createStatement()) {
             st.execute("PRAGMA busy_timeout=250");

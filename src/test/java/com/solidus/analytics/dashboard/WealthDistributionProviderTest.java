@@ -89,11 +89,15 @@ class WealthDistributionProviderTest {
 
     @Test
     void getFailsOpenOnMissingDatabase() {
+        Path missing = this.tempDir.resolve("does-not-exist.db");
         WealthDistributionProvider provider =
-            new WealthDistributionProvider(this.tempDir.resolve("does-not-exist.db").toAbsolutePath().toString(), 0L);
+            new WealthDistributionProvider(missing.toAbsolutePath().toString(), 0L);
         // a fresh sqlite file has no player_balances table: the scan must
         // degrade to null, never throw into the payload builder
         assertNull(provider.get());
+        // Audit 4 / F-3: the missing file must NOT be silently created by the
+        // "read-only" accessor (sqlite-jdbc default open flags include CREATE)
+        assertTrue(!Files.exists(missing), "openReadOnly must not create the database file");
     }
 
     @Test
