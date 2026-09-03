@@ -353,5 +353,364 @@ footer { color: var(--muted); font-size: 12px; padding: 26px 2px 0; }
 @media (max-width: 420px) {
   .shell { width: min(100% - 22px, 1180px); padding-top: 26px; }
   .cards { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   UX v2 additions — toolbar, trends, filters, donut, modal,
+   mobile nav. Same flat green language, no glow.
+   ============================================================ */
+
+/* ---------- Hero side: status + action buttons ---------- */
+
+.hero-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.hero-side .status { cursor: pointer; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+.btn {
+  font: 600 12px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .02em;
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+.btn:hover { border-color: var(--accent); transform: translateY(-1px); }
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04140a;
+}
+.btn-accent:hover { background: var(--accent-light); border-color: var(--accent-light); }
+.btn-ghost { background: transparent; color: var(--muted); }
+.btn-ghost:hover { color: var(--text); }
+
+/* ---------- Trend chips ---------- */
+
+.trend {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+  color: var(--muted);
+  min-height: 15px;
+}
+.trend:empty { min-height: 0; }
+.trend[data-empty="true"] { min-height: 0; }
+.trend-up { color: var(--good); }
+.trend-down { color: var(--bad); }
+.trend-flat { color: var(--muted); }
+.trend-grade {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: 11px;
+}
+
+/* ---------- Snapshot time freshness ---------- */
+
+#snapshot-time.fresh { color: var(--good); }
+#snapshot-time.stale { color: var(--warn); font-weight: 700; }
+
+/* ---------- Panel control rows (search + segmented) ---------- */
+
+.panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.panel-controls .input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.input {
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  font: 500 13px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  padding: 9px 14px;
+  outline: none;
+  transition: border-color .18s ease;
+}
+.input::placeholder { color: var(--muted); }
+.input:focus { border-color: var(--accent); }
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.seg-btn {
+  font: 700 11px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .04em;
+  padding: 9px 13px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--line); }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active {
+  background: var(--accent);
+  color: #04140a;
+}
+
+/* ---------- Alert rows ---------- */
+
+.alert-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.alert-row:last-child { border-bottom: 0; }
+.alert-main { min-width: 0; display: grid; gap: 3px; }
+.alert-title {
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.alert-desc {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.time-ago {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.copy-btn {
+  font: 700 10.5px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .05em;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.copy-btn:hover { color: var(--text); border-color: var(--accent); }
+.copy-btn.copied { color: var(--good); border-color: var(--good); background: var(--accent-soft); }
+.copy-btn.copy-failed { color: var(--bad); border-color: var(--bad); }
+
+/* ---------- Health breakdown ---------- */
+
+.score-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
+}
+.score-row:last-of-type { border-bottom: 0; }
+.score-label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.score-value { font-size: 13px; font-weight: 800; text-align: right; }
+
+.bar-fill.fill-good { background: var(--good); }
+.bar-fill.fill-warn { background: var(--warn); opacity: .85; }
+.bar-fill.fill-bad { background: var(--bad); opacity: .85; }
+
+.health-summary {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.premium-note {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .02);
+}
+
+/* ---------- Wealth distribution ---------- */
+
+.wealth-wrap {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.donut-box { display: grid; gap: 14px; justify-items: center; flex: 0 0 auto; }
+.donut-box .chart-svg, .donut-box svg { width: 168px; height: auto; }
+
+.donut-arc { fill: none; stroke-width: 18; stroke-linecap: butt; }
+.donut-seg-top1 { stroke: var(--accent); }
+.donut-seg-top10 { stroke: rgba(25, 212, 109, .55); }
+.donut-seg-rest { stroke: rgba(255, 255, 255, .14); }
+.donut-center-val {
+  fill: var(--text);
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.donut-center-label {
+  fill: var(--muted);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.donut-legend { display: grid; gap: 8px; min-width: 190px; }
+.legend-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.legend-label { color: var(--muted); font-size: 12.5px; }
+.legend-row strong { font-size: 12.5px; }
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  display: inline-block;
+}
+.swatch.donut-seg-top1 { background: var(--accent); }
+.swatch.donut-seg-top10 { background: rgba(25, 212, 109, .55); }
+.swatch.donut-seg-rest { background: rgba(255, 255, 255, .14); }
+
+.rich-list { flex: 1 1 320px; min-width: 0; display: grid; gap: 2px; }
+.rich-head {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.rich-row {
+  display: grid;
+  grid-template-columns: 26px minmax(90px, 130px) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
+}
+.rich-row:last-child { border-bottom: 0; }
+.rich-balance { font-size: 13px; font-weight: 800; }
+.rich-share { color: var(--muted); font-size: 12px; }
+
+.wealth-empty { font-size: 12.5px; }
+
+/* ---------- Chart additions: crosshair, focus, average ---------- */
+
+.chart-avg {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 5 5;
+  opacity: .7;
+}
+.chart-avg-text { fill: var(--muted); }
+.chart-cross {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: .8;
+}
+.chart-focus { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
+
+/* ---------- Modal ---------- */
+
+.modal { border: none; padding: 0; background: transparent; max-width: none; max-height: none; }
+.modal::backdrop { background: rgba(3, 4, 4, .78); }
+.modal[open] { display: block; }
+.modal-box {
+  background: var(--panel-grad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  padding: 22px 22px 18px;
+  width: min(1120px, calc(100vw - 32px));
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* ---------- Mobile bottom nav ---------- */
+
+.mobile-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  justify-content: space-around;
+  padding: 10px 6px calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.mobile-nav a {
+  color: var(--muted);
+  font: 700 11px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 999px;
+}
+.mobile-nav a:active, .mobile-nav a:hover { color: var(--accent); }
+
+/* anchor targets clear the fixed mobile bar */
+#top, #snapshot, #alerts, #chart { scroll-margin-top: 16px; }
+
+/* history rows gained a fourth column (tx + players) */
+.history-row {
+  grid-template-columns: 92px minmax(0, 1fr) auto auto;
+}
+.history-count { font-size: 11px; white-space: nowrap; }
+
+/* ---------- UX v2 responsive overrides (MUST stay last: these base
+   rules above have equal specificity, so the source order decides) ---------- */
+
+@media (max-width: 760px) {
+  .wealth-wrap { flex-direction: column; }
+  .rich-row { grid-template-columns: 26px minmax(0, 1fr) auto auto; }
+  .rich-row .bar-track { display: none; }
+  .mobile-nav { display: flex; }
+  body { padding-bottom: 58px; }
+  .hero-side { align-items: flex-start; }
+  .actions { justify-content: flex-start; }
+}
+
+@media (max-width: 420px) {
   .history-row { grid-template-columns: 74px minmax(0, 1fr) auto; }
+  .history-count { display: none; }
 }

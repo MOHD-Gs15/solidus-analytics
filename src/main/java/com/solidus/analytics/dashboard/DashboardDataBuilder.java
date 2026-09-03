@@ -33,6 +33,8 @@ public class DashboardDataBuilder {
         json.append(",");
         DashboardDataBuilder.buildLatestSnapshot(json, engine);
         json.append(",");
+        DashboardDataBuilder.buildSnapshotTrend(json, engine);
+        json.append(",");
         DashboardDataBuilder.buildInflationData(json, engine);
         json.append(",");
         DashboardDataBuilder.buildHealthScore(json, engine);
@@ -42,6 +44,8 @@ public class DashboardDataBuilder {
         DashboardDataBuilder.buildDailyHistory(json, engine);
         json.append(",");
         DashboardDataBuilder.buildTopItems(json, engine);
+        json.append(",");
+        DashboardDataBuilder.buildWealthDistribution(json, engine);
         json.append("}");
         return json.toString();
     }
@@ -86,6 +90,69 @@ public class DashboardDataBuilder {
             json.append("\"auctionTotalValue\":").append(snapshot.auctionTotalValue());
             json.append("}");
         }
+    }
+
+    /**
+     * Delta of the latest snapshot against the snapshot taken before it
+     * (dashboard trend arrows). Additive field set - schema version stays 1
+     * per the documented policy. Deltas are absolute (latest minus previous);
+     * the client formats and colors them. Null when fewer than two snapshots
+     * exist (fresh install) - never zeros, mirroring Table 8 rules.
+     */
+    private static void buildSnapshotTrend(StringBuilder json, AnalyticsEngine engine) {
+        json.append("\"snapshotTrend\":");
+        AnalyticsDatabase database = engine.getDatabase();
+        AnalyticsDatabase.Snapshot latest = database == null ? null : database.getLatestSnapshot();
+        AnalyticsDatabase.Snapshot previous = latest == null ? null : database.getSnapshotBefore(latest.timestamp() - 1L);
+        if (latest == null || previous == null) {
+            json.append("null");
+            return;
+        }
+        json.append("{");
+        json.append("\"previousTimestamp\":").append(previous.timestamp()).append(",");
+        json.append("\"totalWealthDelta\":").append(latest.totalWealth() - previous.totalWealth()).append(",");
+        json.append("\"moneySupplyDelta\":").append(latest.moneySupply() - previous.moneySupply()).append(",");
+        json.append("\"playerCountDelta\":").append(latest.playerCount() - previous.playerCount()).append(",");
+        json.append("\"giniDelta\":").append(DashboardDataBuilder.num(latest.giniCoefficient() - previous.giniCoefficient())).append(",");
+        json.append("\"top1ShareDelta\":").append(DashboardDataBuilder.num(latest.top1PercentShare() - previous.top1PercentShare())).append(",");
+        json.append("\"auctionListingsDelta\":").append(latest.auctionActiveListings() - previous.auctionActiveListings());
+        json.append("}");
+    }
+
+    /**
+     * Live wealth distribution (donut + richest players) from the read-only
+     * Core economy view. Null when the provider is not wired (unit stubs) or
+     * the economy database has no players yet.
+     */
+    private static void buildWealthDistribution(StringBuilder json, AnalyticsEngine engine) {
+        json.append("\"wealthDistribution\":");
+        WealthDistributionProvider provider = engine.getWealthDistributionProvider();
+        WealthDistributionProvider.WealthDistribution data = provider == null ? null : provider.get();
+        if (data == null) {
+            json.append("null");
+            return;
+        }
+        json.append("{");
+        json.append("\"computedAt\":").append(data.computedAt()).append(",");
+        json.append("\"totalWealth\":").append(data.totalWealthCents()).append(",");
+        json.append("\"playerCount\":").append(data.playerCount()).append(",");
+        json.append("\"top1Share\":").append(DashboardDataBuilder.num(data.top1Share())).append(",");
+        json.append("\"top10Share\":").append(DashboardDataBuilder.num(data.top10Share())).append(",");
+        json.append("\"topPlayers\":[");
+        List<WealthDistributionProvider.TopPlayer> players = data.topPlayers();
+        for (int i = 0; i < players.size(); ++i) {
+            if (i > 0) {
+                json.append(",");
+            }
+            WealthDistributionProvider.TopPlayer player = players.get(i);
+            json.append("{");
+            json.append("\"rank\":").append(player.rank()).append(",");
+            json.append("\"name\":").append(DashboardDataBuilder.escapeJson(player.name())).append(",");
+            json.append("\"balance\":").append(player.balanceCents()).append(",");
+            json.append("\"share\":").append(DashboardDataBuilder.num(player.share()));
+            json.append("}");
+        }
+        json.append("]}");
     }
 
     private static void buildInflationData(StringBuilder json, AnalyticsEngine engine) {

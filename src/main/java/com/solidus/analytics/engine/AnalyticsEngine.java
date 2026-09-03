@@ -30,6 +30,7 @@ public class AnalyticsEngine {
     private WeeklyReportGenerator weeklyReportGenerator;
     private DashboardManager dashboardManager;
     private CloudAgent cloudAgent;
+    private com.solidus.analytics.dashboard.WealthDistributionProvider wealthDistributionProvider;
     private volatile net.minecraft.server.MinecraftServer attachedServer;
     private volatile boolean initialized = false;
     private volatile boolean premiumEnabled = false;
@@ -66,6 +67,7 @@ public class AnalyticsEngine {
         this.snapshotScheduler = new SnapshotScheduler(this.database, this.economyDbPath, this.auctionsDbPath);
         this.snapshotScheduler.setEngineRef(this);
         this.snapshotScheduler.setSnapshotIntervalMinutes(this.config.getSnapshotIntervalMinutes());
+        this.wealthDistributionProvider = new com.solidus.analytics.dashboard.WealthDistributionProvider(this.economyDbPath);
         this.inflationCalculator = new InflationCalculator(this.database, this.economyDbPath, this.auctionsDbPath);
         // D-3 fix: WeeklyReportGenerator is a PREMIUM feature (ARCHITECTURE §10/§10.4) -
         // it is constructed only inside initializePremium(), exactly like healthScore
@@ -203,6 +205,14 @@ public class AnalyticsEngine {
 
     public FraudDetector getFraudDetector() {
         return this.fraudDetector;
+    }
+
+    /**
+     * Read-only wealth-distribution view (donut + richest players) for the
+     * dashboard payload. Null until initialize() runs or in unit-test stubs.
+     */
+    public com.solidus.analytics.dashboard.WealthDistributionProvider getWealthDistributionProvider() {
+        return this.wealthDistributionProvider;
     }
 
     public DiscordWebhookNotifier getDiscordNotifier() {

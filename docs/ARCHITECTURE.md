@@ -712,6 +712,11 @@ null-tolerance rules below and the cents-only money convention.
     "top1PercentShare": 0.0, "moneySupply": 0,
     "auctionActiveListings": 0, "auctionTotalValue": 0
   },
+  "snapshotTrend": {
+    "previousTimestamp": 0,
+    "totalWealthDelta": 0, "moneySupplyDelta": 0, "playerCountDelta": 0,
+    "giniDelta": 0.0, "top1ShareDelta": 0.0, "auctionListingsDelta": 0
+  },
   "inflation": {
     "moneySupplyCents": 0, "goodsValueCents": 0,
     "moneyToGoodsRatio": 0.0, "status": "HEALTHY",
@@ -727,6 +732,11 @@ null-tolerance rules below and the cents-only money convention.
   "topItems": {
     "bought": [ { "item": "DIAMOND", "quantity": 0 } ],
     "sold":   [ { "item": "DIAMOND", "quantity": 0 } ]
+  },
+  "wealthDistribution": {
+    "computedAt": 0, "totalWealth": 0, "playerCount": 0,
+    "top1Share": 0.0, "top10Share": 0.0,
+    "topPlayers": [ { "rank": 1, "name": "…", "balance": 0, "share": 0.0 } ]
   }
 }
 ```
@@ -734,6 +744,8 @@ null-tolerance rules below and the cents-only money convention.
 **Nullability rules** — a consumer must tolerate `null` for:
 
 - `latestSnapshot` — no snapshot taken yet (fresh install, or zero balances)
+- `snapshotTrend` — fewer than two snapshots exist, so no delta can be computed
+- `wealthDistribution` — provider not wired (unit stubs) or the economy database has no players
 - `inflation` — calculator failed or no baseline snapshots exist
 - `healthScore`, `fraudAlerts` — premium disabled, or license absent
 - every `*Rate` field — no snapshot baseline within the window
