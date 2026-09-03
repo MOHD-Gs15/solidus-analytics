@@ -9,81 +9,161 @@
 </head>
 <body>
   <main class="shell">
-    <header class="hero">
+    <header class="hero" id="top">
       <div class="hero-text">
         <p class="eyebrow">SOLIDUS / SERVER ANALYTICS</p>
         <h1>Economy <span class="accent">intelligence</span></h1>
         <p class="lede">A live operational view of wealth, supply, inflation, commerce, and risk.</p>
       </div>
-      <div id="status" class="status" role="status" aria-live="polite">
-        <span class="status-dot" aria-hidden="true"></span>
-        <span id="status-text">Loading…</span>
+      <div class="hero-side">
+        <div id="status" class="status" role="status" aria-live="polite" title="Click to refresh now">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-text">Loading…</span>
+        </div>
+        <div class="actions">
+          <button id="btn-export" class="btn btn-accent" type="button" title="Download current data as CSV">Export CSV</button>
+          <button id="btn-snapshot-cmd" class="btn btn-ghost" type="button" title="Copy the in-game command that forces a fresh economy snapshot">Copy snapshot cmd</button>
+        </div>
       </div>
     </header>
+
+    <nav class="mobile-nav" aria-label="Quick sections">
+      <a href="#top">KPIs</a>
+      <a href="#snapshot">Snapshot</a>
+      <a href="#alerts">Alerts</a>
+      <a href="#chart">Chart</a>
+    </nav>
 
     <section class="cards" aria-label="Key metrics">
       <article class="card">
         <span class="kpi-label">Total wealth</span>
         <strong id="total-wealth" class="kpi-value">—</strong>
+        <span id="trend-wealth" class="trend" data-empty="true"></span>
         <span class="kpi-foot">S$ across all accounts</span>
       </article>
       <article class="card">
         <span class="kpi-label">Money supply</span>
         <strong id="money-supply" class="kpi-value">—</strong>
+        <span id="trend-supply" class="trend" data-empty="true"></span>
         <span class="kpi-foot">S$ circulating supply</span>
       </article>
       <article class="card">
         <span class="kpi-label">Players</span>
         <strong id="players" class="kpi-value">—</strong>
+        <span id="trend-players" class="trend" data-empty="true"></span>
         <span class="kpi-foot">active now / registered</span>
       </article>
       <article class="card">
         <span class="kpi-label">Health score</span>
         <strong id="health-score" class="kpi-value">—</strong>
+        <span id="health-grade-chip" class="trend" data-empty="true"></span>
         <span class="kpi-foot">composite, out of 100</span>
       </article>
     </section>
 
     <section class="grid" aria-label="Detailed metrics">
-      <article class="panel wide">
+      <article class="panel wide" id="snapshot">
         <div class="panel-heading">
           <h2>Economy snapshot</h2>
           <span id="snapshot-time">No snapshot</span>
         </div>
         <div class="snapshot">
-          <div class="stat"><span>Gini coefficient</span><strong id="gini">—</strong><span class="stat-foot">wealth inequality</span></div>
-          <div class="stat"><span>Inflation</span><strong id="inflation">—</strong><span class="stat-foot">24h price drift</span></div>
-          <div class="stat"><span>Active auctions</span><strong id="auctions">—</strong><span class="stat-foot">open listings</span></div>
+          <div class="stat"><span>Gini coefficient</span><strong id="gini">—</strong><span id="trend-gini" class="trend" data-empty="true"></span><span class="stat-foot">wealth inequality</span></div>
+          <div class="stat"><span>Inflation</span><strong id="inflation">—</strong><span id="trend-inflation" class="trend" data-empty="true"></span><span class="stat-foot">24h price drift</span></div>
+          <div class="stat"><span>Avg balance</span><strong id="avg-balance">—</strong><span class="stat-foot">S$ per account</span></div>
+          <div class="stat"><span>Median balance</span><strong id="median-balance">—</strong><span class="stat-foot">S$ midpoint</span></div>
+          <div class="stat"><span>Active auctions</span><strong id="auctions">—</strong><span id="trend-auctions" class="trend" data-empty="true"></span><span class="stat-foot">open listings</span></div>
           <div class="stat"><span>Auction value</span><strong id="auction-value">—</strong><span class="stat-foot">S$ on the market</span></div>
         </div>
       </article>
 
-      <article class="panel">
-        <div class="panel-heading"><h2>Risk signals</h2></div>
-        <div id="fraud-alerts" class="list muted">No alerts</div>
+      <article class="panel" id="health">
+        <div class="panel-heading">
+          <h2>Health breakdown</h2>
+          <span id="health-note"></span>
+        </div>
+        <div id="health-body" class="list">
+          <div class="premium-note">Health scoring is a premium feature. Activate a Solidus license to unlock the composite score and its five components.</div>
+        </div>
       </article>
 
-      <article class="panel">
-        <div class="panel-heading"><h2>Top items</h2></div>
-        <div id="top-items" class="list muted">No item data</div>
+      <article class="panel" id="alerts">
+        <div class="panel-heading">
+          <h2>Risk signals</h2>
+          <span id="alert-count"></span>
+        </div>
+        <div class="panel-controls">
+          <input id="alert-search" class="input" type="search" placeholder="Search player or type…" autocomplete="off" aria-label="Search alerts">
+          <div class="seg" id="severity-seg" role="group" aria-label="Severity filter">
+            <button class="seg-btn active" type="button" data-sev="ALL">All</button>
+            <button class="seg-btn" type="button" data-sev="HIGH">High</button>
+            <button class="seg-btn" type="button" data-sev="MEDIUM">Med</button>
+            <button class="seg-btn" type="button" data-sev="LOW">Low</button>
+          </div>
+        </div>
+        <div id="fraud-alerts" class="list">No alerts</div>
       </article>
 
-      <article class="panel wide">
+      <article class="panel" id="items">
+        <div class="panel-heading">
+          <h2>Top items</h2>
+          <span id="items-note"></span>
+        </div>
+        <div class="panel-controls">
+          <input id="item-search" class="input" type="search" placeholder="Search item…" autocomplete="off" aria-label="Search items">
+        </div>
+        <div id="top-items" class="list">No item data</div>
+      </article>
+
+      <article class="panel" id="history-panel">
+        <div class="panel-heading">
+          <h2>Recent history</h2>
+          <span id="history-note"></span>
+        </div>
+        <div id="history" class="history">No history</div>
+      </article>
+
+      <article class="panel wide" id="wealth">
+        <div class="panel-heading">
+          <h2>Wealth distribution</h2>
+          <span id="wealth-note"></span>
+        </div>
+        <div id="wealth-body" class="wealth">
+          <div class="wealth-empty muted">Wealth data appears once the economy database has players.</div>
+        </div>
+      </article>
+
+      <article class="panel wide" id="chart">
         <div class="panel-heading">
           <h2>Daily trade volume</h2>
           <span id="chart-range">No data</span>
         </div>
-        <div id="volume-chart" class="chart muted">No chart data yet</div>
-      </article>
-
-      <article class="panel wide">
-        <div class="panel-heading"><h2>Recent history</h2></div>
-        <div id="history" class="history muted">No history</div>
+        <div class="panel-controls">
+          <div class="seg" id="range-seg" role="group" aria-label="Time range">
+            <button class="seg-btn" type="button" data-range="7">7D</button>
+            <button class="seg-btn" type="button" data-range="14">14D</button>
+            <button class="seg-btn active" type="button" data-range="30">30D</button>
+          </div>
+          <span id="volume-trend" class="trend" data-empty="true"></span>
+          <button id="btn-fullscreen" class="btn btn-ghost" type="button" title="Expand chart">Expand</button>
+        </div>
+        <div id="volume-chart" class="chart">No chart data yet</div>
       </article>
     </section>
 
-    <footer>Solidus Analytics · Data is served by the local server configuration · auto-refresh 30s</footer>
+    <footer>Solidus Analytics · read-only view of Solidus Core · auto-refresh 30s (backoff when offline)</footer>
   </main>
+
+  <dialog id="chart-modal" class="modal" aria-label="Expanded daily trade volume">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Daily trade volume</h2>
+        <button id="modal-close" class="btn btn-ghost" type="button">Close</button>
+      </div>
+      <div id="modal-chart" class="chart"></div>
+    </div>
+  </dialog>
+
   <script src="/js/app.js" defer></script>
 </body>
 </html>
