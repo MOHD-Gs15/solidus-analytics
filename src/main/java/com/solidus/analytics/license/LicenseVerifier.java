@@ -38,6 +38,13 @@ import net.fabricmc.loader.api.FabricLoader;
  * <b>Payload (6 pipe-separated fields):</b>
  * {@code 2|<customer>|<expiry YYYY-MM-DD or PERPETUAL>|<fingerprint 16-hex or ANY>|<product>|<nonce 16-hex>}</p>
  *
+ * <p><b>Product binding (audit 4 / F-2):</b> the payload's product field
+ * must equal {@link #EXPECTED_PRODUCT} exactly. A license the vendor
+ * signed for a DIFFERENT Solidus product (e.g. {@code governance-premium})
+ * does NOT activate Analytics premium - without this check one purchased
+ * license would unlock every product in the family (cross-product
+ * replay). Same hardening the Governance 2.1.1 verifier already carries.</p>
+ *
  * <p><b>Trust anchor:</b> the vendor public key is the compile-time constant
  * {@link #SA2_PUBLIC_KEY_B64} embedded in the JAR (LICENSE-SYSTEM.md &sect;3).
  * The legacy {@code SOLIDUS_LICENSE_PUBLIC_KEY} env var and
@@ -55,6 +62,14 @@ public final class LicenseVerifier {
     public static final int PAYLOAD_VERSION = 2;
     public static final int PAYLOAD_FIELDS = 6;
     public static final String PERPETUAL = "PERPETUAL";
+
+    /**
+     * The one and only product this mod accepts licenses for
+     * (LICENSE-SYSTEM.md &sect;2 field 5: "e.g. analytics-premium").
+     * Licenses issued for any other product string are rejected even when
+     * the vendor signature itself is valid.
+     */
+    public static final String EXPECTED_PRODUCT = "analytics-premium";
 
     /**
      * Vendor Ed25519 public key (base64 X.509 SubjectPublicKeyInfo).
@@ -307,8 +322,9 @@ public final class LicenseVerifier {
             this.errorMessage = "Invalid fingerprint field (expected 16 hex chars or ANY)";
             return VerificationState.INVALID;
         }
-        if (fields[4].isBlank()) {
-            this.errorMessage = "Invalid key payload (product field is empty)";
+        if (!LicenseVerifier.EXPECTED_PRODUCT.equals(fields[4])) {
+            this.errorMessage = "License is for product '" + fields[4] + "' - this mod only accepts '"
+                + LicenseVerifier.EXPECTED_PRODUCT + "'";
             return VerificationState.INVALID;
         }
         if (!fields[5].matches("[0-9A-Fa-f]{16}")) {

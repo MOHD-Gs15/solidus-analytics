@@ -160,6 +160,57 @@ class LicenseVerifierTest {
     }
 
     @Test
+    @DisplayName("audit 4 / F-2: a vendor-signed license for a DIFFERENT product (governance-premium) is rejected")
+    void crossProductLicenseRejected() throws Exception {
+        // Correct vendor signature, valid expiry, ANY fingerprint - the only
+        // "wrong" thing is the product field: this key was issued for the
+        // sibling Governance mod. Before the product-binding fix it activated
+        // Analytics premium anyway (cross-product replay).
+        LicenseVerifier verifier = verifierWithKeyFile(
+            issueKey("Shared Owner", LocalDate.now(ZoneOffset.UTC).plusDays(90), "ANY",
+                "governance-premium", "0123456789ABCDEF"));
+
+        assertEquals(LicenseVerifier.VerificationState.INVALID, verifier.initialize());
+        assertFalse(verifier.isPremiumEnabled());
+        assertTrue(verifier.getErrorMessage().contains("governance-premium"),
+            "the rejection must name the mismatched product: " + verifier.getErrorMessage());
+    }
+
+    @Test
+    @DisplayName("audit 4 / F-2: any other product string (e.g. solidus-core) is rejected with the expected-product hint")
+    void otherProductLicenseRejected() throws Exception {
+        LicenseVerifier verifier = verifierWithKeyFile(
+            issueKey("Shared Owner", null, "ANY", "solidus-core", "0123456789ABCDEF"));
+
+        assertEquals(LicenseVerifier.VerificationState.INVALID, verifier.initialize());
+        assertFalse(verifier.isPremiumEnabled());
+        assertTrue(verifier.getErrorMessage().contains(LicenseVerifier.EXPECTED_PRODUCT),
+            "the rejection must state the only accepted product: " + verifier.getErrorMessage());
+    }
+
+    @Test
+    @DisplayName("audit 4 / F-2: an empty product field is still rejected (regression guard)")
+    void blankProductLicenseRejected() throws Exception {
+        LicenseVerifier verifier = verifierWithKeyFile(
+            issueKey("Blank Product", null, "ANY", "", "0123456789ABCDEF"));
+
+        assertEquals(LicenseVerifier.VerificationState.INVALID, verifier.initialize());
+        assertFalse(verifier.isPremiumEnabled());
+    }
+
+    @Test
+    @DisplayName("product binding is exact: near-miss spellings do not verify")
+    void productBindingIsExact() throws Exception {
+        for (String nearMiss : new String[]{"Analytics-Premium", "analytics_premium", "analytics-premium ", " analytics-premium"}) {
+            LicenseVerifier verifier = verifierWithKeyFile(
+                issueKey("Case Owner", null, "ANY", nearMiss, "0123456789ABCDEF"));
+            assertEquals(LicenseVerifier.VerificationState.INVALID, verifier.initialize(),
+                "near-miss product '" + nearMiss + "' must be rejected");
+            assertFalse(verifier.isPremiumEnabled());
+        }
+    }
+
+    @Test
     @DisplayName("a tampered payload (extra field shifted) is rejected")
     void wrongFieldCountRejected() throws Exception {
         // 4-field legacy payload signed by a VALID vendor key: must still be rejected.

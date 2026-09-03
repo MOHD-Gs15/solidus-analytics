@@ -47,7 +47,7 @@ Payload — pipe-separated, 6 fields, UTF-8:
 | 2 | customer | free text, no `\|` | **Watermark** — identifies the buyer in every leaked key |
 | 3 | expiry | `YYYY-MM-DD` or `PERPETUAL` | `PERPETUAL` = never expires |
 | 4 | fingerprint | 16 hex chars or `ANY` | Output of `/analytics fingerprint`; `ANY` = universal (reseller) key |
-| 5 | product | e.g. `analytics-premium` | Future-proofing for multi-product licensing |
+| 5 | product | **must be exactly `analytics-premium`** | Product binding (audit 4): keys issued for any other Solidus product are rejected even with a valid vendor signature |
 | 6 | nonce | 16 hex chars | Random — guarantees two identical orders never share a key |
 
 Verification order: structure → Base64URL decode → **Ed25519 signature** →
