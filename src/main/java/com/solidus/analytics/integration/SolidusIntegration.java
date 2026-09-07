@@ -30,6 +30,11 @@ public final class SolidusIntegration {
     private Method getEconomyStatsMethod;
     private Method registerHookMethod;
     private Method unregisterHookMethod;
+    // DB_SCALING_PLAN §8.5: Analytics must follow Core's storage backend.
+    // EconomyEngine.isMysqlMode() (public since core 2.2.1) is the decisive
+    // signal - when true, the SQLite file paths are dead and every collector
+    // must read through CoreLedgerAccess instead.
+    private Method isMysqlModeMethod;
     private volatile String economyDbPath;
 
     private SolidusIntegration(Object apiInstance, Class<?> apiClass) {
@@ -138,6 +143,30 @@ public final class SolidusIntegration {
 
     public void setEconomyDbPath(String economyDbPath) {
         this.economyDbPath = economyDbPath;
+    }
+
+    /**
+     * True when Core runs its MySQL/MariaDB network mode (EconomyEngine
+     * isMysqlMode() via reflection). False when Core is absent, older than
+     * the 2.2 family, or running SQLite - i.e. every case where the direct
+     * file readers remain authoritative.
+     */
+    public boolean isCoreMysqlMode() {
+        if (!SolidusIntegration.isAvailable() || this.getEconomyEngineMethod == null || this.isMysqlModeMethod == null) {
+            return false;
+        }
+        try {
+            Object engine = this.getEconomyEngineMethod.invoke(this.apiInstance, new Object[0]);
+            if (engine == null) {
+                return false;
+            }
+            Object flag = this.isMysqlModeMethod.invoke(engine, new Object[0]);
+            return flag instanceof Boolean b && b.booleanValue();
+        }
+        catch (Exception e) {
+            SolidusAnalyticsMod.LOGGER.debug("Reflected isMysqlMode failed - assuming SQLite mode", (Throwable)e);
+            return false;
+        }
     }
 
     // ---- Cloud Agent write bridge (PROTOCOL.md "API" path) ------------
@@ -300,6 +329,12 @@ public final class SolidusIntegration {
             this.getEconomyEngineMethod = this.apiClass.getMethod("getEconomyEngine", new Class[0]);
             Class<?> engineClass = Class.forName("com.solidus.economy.EconomyEngine");
             this.getStorageMethod = engineClass.getMethod("getStorage", new Class[0]);
+            try {
+                this.isMysqlModeMethod = engineClass.getMethod("isMysqlMode", new Class[0]);
+            }
+            catch (NoSuchMethodException e) {
+                SolidusAnalyticsMod.LOGGER.info("EconomyEngine.isMysqlMode() not found in this Core build - MySQL ledger mode unavailable.");
+            }
             Class<?> storageClass = Class.forName("com.solidus.economy.SQLiteStorage");
             try {
                 this.getCachedPlayerCountMethod = storageClass.getMethod("getCachedPlayerCount", new Class[0]);

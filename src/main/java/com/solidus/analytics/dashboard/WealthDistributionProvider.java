@@ -1,6 +1,7 @@
 package com.solidus.analytics.dashboard;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.CoreLedgerAccess;
 import com.solidus.analytics.storage.DirectDb;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -44,6 +45,8 @@ public final class WealthDistributionProvider {
 
     private final String economyDbPath;
     private final long refreshIntervalMs;
+    // §8.5 (2.1.3): optional Core-connection read path (MySQL network mode).
+    private volatile CoreLedgerAccess ledgerAccess;
     private volatile WealthDistribution cached;
 
     public WealthDistributionProvider(String economyDbPath) {
@@ -53,6 +56,11 @@ public final class WealthDistributionProvider {
     WealthDistributionProvider(String economyDbPath, long refreshIntervalMs) {
         this.economyDbPath = economyDbPath;
         this.refreshIntervalMs = refreshIntervalMs;
+    }
+
+    /** Wires the Core-connection read path (MySQL network mode). Nullable. */
+    public void setLedgerAccess(CoreLedgerAccess ledgerAccess) {
+        this.ledgerAccess = ledgerAccess;
     }
 
     /**
@@ -85,7 +93,19 @@ public final class WealthDistributionProvider {
         ArrayList<String> topNames = new ArrayList<String>();
         ArrayList<Long> topBalances = new ArrayList<Long>();
         long totalWealth = 0L;
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
+        if (this.ledgerAccess != null) {
+            // Core-connection path: rows already arrive DESC with cents and
+            // blank-name normalization applied.
+            for (CoreLedgerAccess.BalanceRow row : this.ledgerAccess.balanceScanDesc()) {
+                balances.add(row.balanceCents());
+                totalWealth += row.balanceCents();
+                if (topNames.size() < WealthDistributionProvider.TOP_PLAYERS_LIMIT) {
+                    topNames.add(row.playerName());
+                    topBalances.add(row.balanceCents());
+                }
+            }
+        }
+        else try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             String sql = "SELECT player_name, balance FROM player_balances ORDER BY balance DESC";
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {

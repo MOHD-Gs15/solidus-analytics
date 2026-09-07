@@ -167,8 +167,12 @@
     // yesterday row exists)
     const todayRow = hist.length > 0 ? hist[0] : null;
     const todayVol = live.dailyVolume != null ? live.dailyVolume : (todayRow ? todayRow.transactionVolume : null);
+    // Unit fix (2.1.3): both live.dailyVolume and history transactionVolume
+    // are integer CENTS. setTrend's 'money' branch already divides by 100
+    // once for display - the extra pre-division here made the volume trend
+    // chip report exactly 1/100 of the real day-over-day delta.
     setTrend('volume-trend', todayVol != null && yesterday && yesterday.transactionVolume
-      ? (todayVol - yesterday.transactionVolume) / 100 : null, {
+      ? todayVol - yesterday.transactionVolume : null, {
       unit: 'money', title: "Today's volume vs yesterday's full day",
     });
   }

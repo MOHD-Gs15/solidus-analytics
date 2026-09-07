@@ -314,7 +314,31 @@ resources/
 ---
 ## 6. Core Subsystem: Data Collection
 
-The collection layer is the read-only bridge between Solidus Core's databases and Analytics' own storage. It consists of three independent engines, all running on the shared `Solidus-Analytics-Worker` thread.
+The collection layer is the read-only bridge between Solidus Core's databases and Analytics' own storage. It consists of three independent engines. Since 2.1.3, `LiveMetricsTracker` runs on its **own dedicated daemon thread** (`Solidus-Analytics-LivePoller`); earlier releases submitted its infinite loop to the shared single-thread `Solidus-Analytics-Worker` executor, which starved every queued task (snapshot inserts, daily upserts, dashboard publishes, cleanup) and grew the task queue without bound.
+
+#### Ledger source selection (2.1.3 — DB_SCALING_PLAN §8.5 closure)
+
+Every collector picks its read source the same way:
+
+| Core state | Read path | Why |
+|------------|-----------|-----|
+| Core absent (standalone) or SQLite mode | Direct read-only SQLite files (`economy.db`, `auctions.db` via `DirectDb`) | Files are the authoritative ledger |
+| Core 2.2.x **MySQL network mode** (`EconomyEngine.isMysqlMode()` via reflection) | `CoreLedgerAccess` — SELECT-only SQL executed through Core's own `TransactionLog.withConnection(SqlWork)` connection | The ledger, balances and auction tables live in MySQL; the local files are missing or frozen pre-cutover copies |
+
+`CoreLedgerAccess` adds zero dependencies (Core's driver and pool do the driving; the bridge is a `Proxy` over Core's public `SqlWork` interface) and its statements are portability-proven against real MariaDB by the CI-gated `CoreLedgerAccessMySqlTest`. A storage cutover performed mid-session requires a server restart for Analytics to switch paths.
+
+#### Volume accounting (2.1.3 — the "insane chart inflation" fix)
+
+Volume counts money that actually moved between accounts, exactly once. Core writes participant mirror rows and escrow-churn rows; the pre-2.1.3 poller counted them all, so a 1200 S$ bid-settled auction reported 6800 S$ of "volume" (5.7x), and a 50-bid war reported roughly 100x:
+
+| Ledger type | Counts toward volume? | Reason |
+|-------------|----------------------|--------|
+| `PAY_SEND` / `TRADE_SEND` / `SHOP_BUY` / `SHOP_SELL` / `AUCTION_BOUGHT` / `ADMIN_*` / `AUCTION_LIST` (fee) | Yes | One row per real movement |
+| `PAY_RECEIVE` / `TRADE_RECEIVE` / `AUCTION_SOLD` / `DEATH_REWARD` | No | Receiver-side mirror of a counted row |
+| `BID_PLACED` / `BID_REFUNDED` | No | Escrow in/out churn — money never changes economic owner; the real sale is counted at settlement |
+| `AUCTION_WON` | Only when `target_uuid` is set | Settlement (target = seller) is the one real movement of a bid-settled sale; the `/ah collect` item-delivery note (null target) re-quotes the win price without moving money |
+
+Additional 2.1.3 poller hardening: the batch is buffered before any counter is applied (a failed read can no longer double-count), the poll row cap is 20,000/cycle, and `start()`/`stop()` are serialized (the old check-then-act guard could spawn two polling loops feeding the same counters).
 
 ### 6.1 LiveMetricsTracker — Incremental Transaction Polling
 
@@ -656,9 +680,9 @@ This is the single most important correctness convention in the codebase. Solidu
 
 | Source column | Consumer | Rule |
 |---------------|----------|------|
-| `player_balances.balance` (`REAL S$`) | SnapshotScheduler, InflationCalculator | `Math.round(getDouble * 100.0)` |
-| `transaction_log.amount` (`REAL S$`) | LiveMetricsTracker volume | `Math.round(getDouble * 100.0)` |
-| `auction_listings.price` (`REAL S$`) | SnapshotScheduler auction value, InflationCalculator goods value | `Math.round(getDouble * 100.0)` |
+| `player_balances.balance` (`REAL S$` SQLite / `DECIMAL(18,2)` MySQL) | SnapshotScheduler, InflationCalculator | `Math.round(getDouble * 100.0)` |
+| `transaction_log.amount` (`REAL S$` SQLite / `DECIMAL(18,2)` MySQL) | LiveMetricsTracker volume | `Math.round(getDouble * 100.0)` |
+| `auction_listings.price` (`REAL S$` SQLite / `DECIMAL(18,2)` MySQL) | SnapshotScheduler auction value, InflationCalculator goods value | `Math.round(getDouble * 100.0)` |
 | FraudDetector reads | Alert text (display) | Kept as raw `S$` doubles — display units, deliberately not cents |
 | Dashboard JSON | Browser | Cents served; `app.js` divides by 100 for display |
 

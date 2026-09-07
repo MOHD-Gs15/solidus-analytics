@@ -1,6 +1,7 @@
 package com.solidus.analytics.engine;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.CoreLedgerAccess;
 import com.solidus.analytics.storage.DirectDb;
 import com.solidus.analytics.storage.AnalyticsDatabase;
 import java.sql.Connection;
@@ -18,12 +19,19 @@ public class InflationCalculator {
     private final AnalyticsDatabase analyticsDb;
     private final String economyDbPath;
     private final String auctionsDbPath;
+    // §8.5 (2.1.3): optional Core-connection read path (MySQL network mode).
+    private volatile CoreLedgerAccess ledgerAccess;
     private volatile InflationReport cachedReport;
 
     public InflationCalculator(AnalyticsDatabase analyticsDb, String economyDbPath, String auctionsDbPath) {
         this.analyticsDb = analyticsDb;
         this.economyDbPath = economyDbPath;
         this.auctionsDbPath = auctionsDbPath;
+    }
+
+    /** Wires the Core-connection read path (MySQL network mode). Nullable. */
+    public void setLedgerAccess(CoreLedgerAccess ledgerAccess) {
+        this.ledgerAccess = ledgerAccess;
     }
 
     public InflationReport calculate() {
@@ -55,6 +63,15 @@ public class InflationCalculator {
     }
 
     private long getMoneySupply() {
+        if (this.ledgerAccess != null) {
+            try {
+                return this.ledgerAccess.moneySupplyCents();
+            }
+            catch (SQLException e) {
+                SolidusAnalyticsMod.LOGGER.error("Failed to read money supply via Core connection", (Throwable)e);
+            }
+            return 0L;
+        }
                 String sql = "SELECT COALESCE(SUM(balance), 0) as total_wealth, COUNT(*) as player_count FROM player_balances";
         try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             try (Statement stmt = conn.createStatement();
@@ -78,6 +95,15 @@ public class InflationCalculator {
     }
 
     private long getActiveAuctionValue() {
+        if (this.ledgerAccess != null) {
+            try {
+                return this.ledgerAccess.auctionStats().totalValueCents();
+            }
+            catch (SQLException e) {
+                SolidusAnalyticsMod.LOGGER.warn("Failed to read auction value via Core connection. Using 0.", (Throwable)e);
+            }
+            return 0L;
+        }
         if (this.auctionsDbPath == null) {
             return 0L;
         }
@@ -97,6 +123,15 @@ public class InflationCalculator {
     }
 
     private long estimateShopThroughput() {
+        if (this.ledgerAccess != null) {
+            try {
+                return this.ledgerAccess.shopThroughputCentsSince(System.currentTimeMillis() - 86400000L);
+            }
+            catch (SQLException e) {
+                SolidusAnalyticsMod.LOGGER.warn("Failed to estimate shop throughput via Core connection. Using 0.", (Throwable)e);
+            }
+            return 0L;
+        }
                 long twentyFourHoursAgo = System.currentTimeMillis() - 86400000L;
         String sql = "SELECT COALESCE(SUM(ABS(amount)), 0) as shop_volume FROM transaction_log WHERE type IN ('SHOP_BUY', 'SHOP_SELL') AND timestamp > ?";
         try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {

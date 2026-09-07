@@ -14,6 +14,7 @@ import com.solidus.analytics.premium.EconomyHealthScore;
 import com.solidus.analytics.premium.FraudDetector;
 import com.solidus.analytics.premium.WeeklyReportGenerator;
 import com.solidus.analytics.storage.AnalyticsDatabase;
+import com.solidus.analytics.storage.CoreLedgerAccess;
 import java.nio.file.Path;
 import net.fabricmc.loader.api.FabricLoader;
 
@@ -61,14 +62,36 @@ public class AnalyticsEngine {
             SolidusAnalyticsMod.LOGGER.error("Analytics database failed to initialize. Engine will not start.");
             return;
         }
+        // DB_SCALING_PLAN §8.5 (2.1.3): follow Core's storage backend. When
+        // Core runs its MySQL network mode, the local economy.db/auctions.db
+        // files are absent or frozen pre-cutover copies - every collector
+        // must read through Core's own TransactionLog connection instead.
+        // A storage cutover performed mid-session needs a restart (or a
+        // server relog) for Analytics to switch ledger paths.
+        CoreLedgerAccess ledgerAccess = null;
+        boolean mysqlMode = SolidusIntegration.getInstance() != null
+            && SolidusIntegration.getInstance().isCoreMysqlMode();
+        if (mysqlMode) {
+            ledgerAccess = CoreLedgerAccess.create(SolidusIntegration.getInstance().getTransactionLog());
+            if (ledgerAccess != null) {
+                SolidusAnalyticsMod.LOGGER.info("Core is in MySQL network mode - Analytics reads the ledger through Core's own connection (backend-agnostic). Direct SQLite file readers are bypassed.");
+            }
+            else {
+                SolidusAnalyticsMod.LOGGER.error("Core MySQL mode detected but the CoreLedgerAccess bridge failed to wire - collectors would read a stale/missing economy.db. Update both mods to matching family versions.");
+            }
+        }
         this.liveMetrics = new LiveMetricsTracker(this.database, this.economyDbPath);
+        this.liveMetrics.setLedgerAccess(ledgerAccess);
         this.liveMetrics.setPollingIntervalSeconds(this.config.getPollingIntervalSeconds());
         this.liveMetrics.start();
         this.snapshotScheduler = new SnapshotScheduler(this.database, this.economyDbPath, this.auctionsDbPath);
         this.snapshotScheduler.setEngineRef(this);
+        this.snapshotScheduler.setLedgerAccess(ledgerAccess);
         this.snapshotScheduler.setSnapshotIntervalMinutes(this.config.getSnapshotIntervalMinutes());
         this.wealthDistributionProvider = new com.solidus.analytics.dashboard.WealthDistributionProvider(this.economyDbPath);
+        this.wealthDistributionProvider.setLedgerAccess(ledgerAccess);
         this.inflationCalculator = new InflationCalculator(this.database, this.economyDbPath, this.auctionsDbPath);
+        this.inflationCalculator.setLedgerAccess(ledgerAccess);
         // D-3 fix: WeeklyReportGenerator is a PREMIUM feature (ARCHITECTURE §10/§10.4) -
         // it is constructed only inside initializePremium(), exactly like healthScore
         // and fraudDetector. Without a license it stays null and every caller

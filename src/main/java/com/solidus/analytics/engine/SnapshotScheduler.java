@@ -1,6 +1,7 @@
 package com.solidus.analytics.engine;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
+import com.solidus.analytics.storage.CoreLedgerAccess;
 import com.solidus.analytics.storage.DirectDb;
 import com.solidus.analytics.engine.AnalyticsEngine;
 import com.solidus.analytics.storage.AnalyticsDatabase;
@@ -13,12 +14,16 @@ import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 public class SnapshotScheduler {
     private int snapshotIntervalTicks = 36000;
     private final AnalyticsDatabase analyticsDb;
     private final String economyDbPath;
     private final String auctionsDbPath;
+    // §8.5 (2.1.3): MySQL-mode read path through Core's own connection.
+    private volatile CoreLedgerAccess ledgerAccess;
     private volatile String lastDailySnapshotDate = "";
     private int tickCounter = 0;
     private volatile AnalyticsEngine engineRef;
@@ -27,6 +32,11 @@ public class SnapshotScheduler {
         this.analyticsDb = analyticsDb;
         this.economyDbPath = economyDbPath;
         this.auctionsDbPath = auctionsDbPath;
+    }
+
+    /** Wires the Core-connection read path (MySQL network mode). Nullable. */
+    public void setLedgerAccess(CoreLedgerAccess ledgerAccess) {
+        this.ledgerAccess = ledgerAccess;
     }
 
     public void setEngineRef(AnalyticsEngine engine) {
@@ -81,7 +91,22 @@ public class SnapshotScheduler {
     SnapshotData computeSnapshot() {
         SnapshotData data = new SnapshotData();
                 ArrayList<Long> balances = new ArrayList<Long>();
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
+        if (this.ledgerAccess != null) {
+            // MySQL-mode (or any Core-connected mode): read balances through
+            // Core's own connection - same cents contract, backend-agnostic.
+            try {
+                List<CoreLedgerAccess.BalanceRow> rows = this.ledgerAccess.balanceScanDesc();
+                for (CoreLedgerAccess.BalanceRow row : rows) {
+                    balances.add(row.balanceCents());
+                }
+                Collections.sort(balances); // ascending, like the file query
+            }
+            catch (SQLException e) {
+                SolidusAnalyticsMod.LOGGER.error("Failed to read balances via Core connection", (Throwable)e);
+                return null;
+            }
+        }
+        else try (Connection conn = DirectDb.openReadOnly(this.economyDbPath)) {
             String sql = "SELECT balance FROM player_balances ORDER BY balance ASC";
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
@@ -119,7 +144,19 @@ public class SnapshotScheduler {
         data.top1PercentShare = totalWealth > 0L ? (double)top1Wealth / (double)totalWealth : 0.0;
         data.auctionActiveListings = 0;
         data.auctionTotalValue = 0L;
-        if (this.auctionsDbPath != null) {
+        if (this.ledgerAccess != null) {
+            // MySQL mode keeps auction tables in the SAME shared database the
+            // TransactionLog connection points at.
+            try {
+                CoreLedgerAccess.AuctionStats stats = this.ledgerAccess.auctionStats();
+                data.auctionActiveListings = (int)Math.min(Integer.MAX_VALUE, stats.activeListings());
+                data.auctionTotalValue = stats.totalValueCents();
+            }
+            catch (SQLException e) {
+                SolidusAnalyticsMod.LOGGER.warn("Failed to read auction data via Core connection. Auction metrics will be zero.", (Throwable)e);
+            }
+        }
+        else if (this.auctionsDbPath != null) {
                         try (Connection conn = DirectDb.openReadOnly(this.auctionsDbPath)) {
                 String sql = "SELECT COUNT(*) as cnt, COALESCE(SUM(price), 0) as total_val FROM auction_listings WHERE status = 0";
                 try (Statement stmt4 = conn.createStatement();
