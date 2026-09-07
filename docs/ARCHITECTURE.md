@@ -316,16 +316,18 @@ resources/
 
 The collection layer is the read-only bridge between Solidus Core's databases and Analytics' own storage. It consists of three independent engines. Since 2.1.3, `LiveMetricsTracker` runs on its **own dedicated daemon thread** (`Solidus-Analytics-LivePoller`); earlier releases submitted its infinite loop to the shared single-thread `Solidus-Analytics-Worker` executor, which starved every queued task (snapshot inserts, daily upserts, dashboard publishes, cleanup) and grew the task queue without bound.
 
-#### Ledger source selection (2.1.3 — DB_SCALING_PLAN §8.5 closure)
+#### Ledger source selection (2.1.3 engine collectors — extended to ALL collectors in 2.1.4)
 
-Every collector picks its read source the same way:
+Every collector — the three engine collectors AND the premium/cloud read paths (`FraudDetector`, `EconomyCollector`) — picks its read source the same way:
 
 | Core state | Read path | Why |
 |------------|-----------|-----|
 | Core absent (standalone) or SQLite mode | Direct read-only SQLite files (`economy.db`, `auctions.db` via `DirectDb`) | Files are the authoritative ledger |
 | Core 2.2.x **MySQL network mode** (`EconomyEngine.isMysqlMode()` via reflection) | `CoreLedgerAccess` — SELECT-only SQL executed through Core's own `TransactionLog.withConnection(SqlWork)` connection | The ledger, balances and auction tables live in MySQL; the local files are missing or frozen pre-cutover copies |
 
-`CoreLedgerAccess` adds zero dependencies (Core's driver and pool do the driving; the bridge is a `Proxy` over Core's public `SqlWork` interface) and its statements are portability-proven against real MariaDB by the CI-gated `CoreLedgerAccessMySqlTest`. A storage cutover performed mid-session requires a server restart for Analytics to switch paths.
+`CoreLedgerAccess` adds zero dependencies (Core's driver and pool do the driving; the bridge is a `Proxy` over Core's public `SqlWork` interface) and its statements are portability-proven against real MariaDB by the CI-gated `CoreLedgerAccessMySqlTest` and `MySqlPremiumCloudBridgeTest`. A storage cutover performed mid-session requires a server restart for Analytics to switch paths.
+
+Since 2.1.4 the premium/cloud collectors consume the SAME bridge through the generic `CoreLedgerAccess.read(SqlWorkAdapter)` seam (SELECT-only, self-bounded work objects; the handed-out connection is never closed — its lifecycle belongs to Core's pool). Before that they read SQLite files directly and failed open (empty scans) in MySQL mode; parity with the direct-file path is pinned by `FraudDetectorBridgeTest` and `EconomyCollectorBridgeTest`, and the fail-open contract (a broken ledger source degrades to empty results, never an exception) is asserted in both.
 
 #### Volume accounting (2.1.3 — the "insane chart inflation" fix)
 
@@ -637,8 +639,12 @@ Produces a 0–100 score with a letter grade and a human-readable summary:
 | `RAPID_WEALTH_GAIN` | 1 hour | Player income (`SUM(amount > 0)`) > 5× server average income | `HIGH` > 10×, else `MEDIUM` |
 | `HIGH_FREQUENCY` | 1 minute | > 30 transactions by one player | `HIGH` > 90, else `LOW` |
 | `UNUSUAL_SIZE` | 1 hour | Single transaction > 10× average `ABS(amount)` (top 10) | `HIGH` > 20×, else `MEDIUM` |
+| `CIRCULAR_TRADING` | 24 hours | Closed payment loops over `PAY_SEND` edges: 2-loops (A↔B ping-pong) and 3-loops (A→B→C→A), bounded at 50,000 rows | `MEDIUM` per loop; `HIGH` when a player participates in 5+ loops |
+| `ZERO_VALUE_TRANSFER` | 24 hours | `PAY_SEND` rows with `ABS(amount) < 0.01` — Core rejects amount ≤ 0, so these imply a mod-side bypass or direct DB write | `HIGH` > 10, else `LOW` |
 
 All amount comparisons read `REAL` columns as `double` (fractional `S$` preserved); alert text stays in raw `S$` display units. Alerts are kept in a bounded in-memory ring (100 most recent) surfaced via `/analytics fraud` and the dashboard. An initial full scan runs on startup; `/analytics fraud scan` (admin) reruns all detectors on demand.
+
+Read path (2.1.4): every detector runs through the same dual path as the engine collectors — the `CoreLedgerAccess` bridge when Core is in MySQL network mode, otherwise short-lived read-only connections to `economy.db`. A failed scan degrades to an empty alert list (fail-open, premium-only path); parity and fail-open are pinned by `FraudDetectorBridgeTest`, dialect portability by the CI-gated `MySqlPremiumCloudBridgeTest`.
 
 ### 10.4 WeeklyReportGenerator & DiscordWebhookNotifier
 
@@ -969,6 +975,11 @@ Analytics ships a JUnit 5 suite (`./gradlew clean test`) covering the highest-ri
 | `LiveMetricsTrackerPollingTest` | **P0 regression**: metrics collected when the transaction log starts empty; mirror rows (`PAY_RECEIVE`/`AUCTION_SOLD`) counted once in volume, fully in activity |
 | `SnapshotSchedulerMoneyUnitsTest` | **P1 regression**: balances and auction value converted to cents; expired listings excluded from auction value |
 | `FraudDetectorPrecisionTest` | **P2 regression**: fractional incomes (`300.25`) preserved through detection and alert text |
+| `CoreLedgerAccessTest` | Bridge SQL surface (seed/poll/aggregate + the generic `read` seam) on a SQLite provider |
+| `CoreLedgerAccessMySqlTest` | **CI-gated**: §8.5 ledger SQL portability against real MariaDB (id-cursor, `DECIMAL(18,2)` → cents, aggregates, wealth scan) |
+| `FraudDetectorBridgeTest` | 2.1.4: bridge mode produces the SAME alerts as the direct file path; broken ledger source fails open |
+| `EconomyCollectorBridgeTest` | 2.1.4: bridge/file parity across the cloud command surface (tx search, profile, auctions, trend, notifications); fail-open defaults |
+| `MySqlPremiumCloudBridgeTest` | **CI-gated**: 2.1.4 completion of §8.5 — after the storage migrate + restart, FraudDetector and EconomyCollector read the MIGRATED MySQL ledger through Core's own connection (real `DECIMAL(18,2)` money, real schema) |
 
 ### Known Testing Gap
 

@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
@@ -103,6 +104,24 @@ class CoreLedgerAccessTest {
     @Test
     void seedMaxIdReturnsZeroOnEmptyLog() throws Exception {
         assertEquals(0L, access.seedMaxId());
+    }
+
+    @Test
+    void genericReadSeamRunsCallerSqlOnTheProvidedConnection() throws Exception {
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile);
+             Statement stmt = conn.createStatement()) {
+            insertRow(conn, "PAY_SEND", "uuid-a", "uuid-b", 12.34, null, 0);
+        }
+        // The 2.1.4 seam used by FraudDetector / EconomyCollector: arbitrary
+        // (SELECT-only, bounded) caller SQL on the same provider connection.
+        Long count = access.read(c -> {
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) AS n FROM transaction_log")) {
+                rs.next();
+                return Long.valueOf(rs.getLong(1));
+            }
+        });
+        assertEquals(1L, count.longValue());
     }
 
     @Test

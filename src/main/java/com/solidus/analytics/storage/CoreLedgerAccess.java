@@ -126,8 +126,13 @@ public final class CoreLedgerAccess {
         }
     }
 
-    /** Test/verification constructor: plain connection provider. */
-    static CoreLedgerAccess forConnectionProvider(ConnectionProvider provider) {
+    /**
+     * Verification seam: plain connection provider (SQLite file, in-memory
+     * DB, real MariaDB...). Public since 2.1.4 so the premium/cloud collector
+     * bridge tests can drive the exact production SQL without Core on the
+     * classpath. Production code must use {@link #create(Object)} instead.
+     */
+    public static CoreLedgerAccess forConnectionProvider(ConnectionProvider provider) {
         return new CoreLedgerAccess(provider);
     }
 
@@ -139,6 +144,23 @@ public final class CoreLedgerAccess {
         @SuppressWarnings("unchecked")
         T typed = (T) result;
         return typed;
+    }
+
+    /**
+     * Generic read seam for the remaining premium/cloud collectors
+     * (FraudDetector, EconomyCollector - 2.1.4). The work object runs on the
+     * SAME live Core connection that the fixed query methods use: a shared
+     * SQLite connection in single-server mode, a pooled MySQL connection in
+     * network mode.
+     *
+     * <p>Contract (extends the accessibility contract in the class javadoc):
+     * the work object may only issue SELECT statements and must bound itself
+     * (LIMIT / aggregates). It must never close the handed-out connection -
+     * its lifecycle belongs to Core's pool. Analytics must never write to
+     * Core's database through this seam.</p>
+     */
+    public <T> T read(SqlWorkAdapter work) throws SQLException {
+        return query(work);
     }
 
     // ---------------------------------------------------------------

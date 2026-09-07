@@ -6,6 +6,7 @@ import com.solidus.analytics.SolidusAnalyticsMod;
 import com.solidus.analytics.engine.InflationCalculator;
 import com.solidus.analytics.engine.LiveMetricsTracker;
 import com.solidus.analytics.integration.SolidusIntegration;
+import com.solidus.analytics.storage.CoreLedgerAccess;
 import com.solidus.analytics.storage.DirectDb;
 import java.lang.reflect.Method;
 import java.sql.Connection;
@@ -22,9 +23,14 @@ import java.util.concurrent.TimeUnit;
  * queries behind econ.tx.search / player.profile / market.price.trend
  * (PROTOCOL.md &sect;5.2 and &sect;15).
  *
- * <p>Read path discipline: everything that touches Core databases goes through
- * {@link DirectDb#openReadOnly} (query_only=ON, short busy timeout) or through
- * the existing reflection bridge. Money leaves this class in integer cents.</p>
+ * <p>Read path discipline (2.1.4): everything that touches CORE databases
+ * (economy.db / auctions.db in SQLite mode) follows the same dual path as the
+ * engine collectors - through the {@link CoreLedgerAccess} bridge on Core's
+ * own live connection when Core runs its 2.2.x MySQL network mode, otherwise
+ * via {@link DirectDb#openReadOnly} (query_only=ON, short busy timeout).
+ * Reads on the ANALYTICS database (analytics.db - econ.distribution) always
+ * stay on the direct file path: that file is Analytics' own SQLite store and
+ * exists in every mode. Money leaves this class in integer cents.</p>
  */
 public final class EconomyCollector {
     private static final int API_TIMEOUT_SECONDS = 5;
@@ -34,6 +40,7 @@ public final class EconomyCollector {
     private final String analyticsDbPath;
     private final LiveMetricsTracker liveMetrics;
     private final InflationCalculator inflationCalculator;
+    private volatile CoreLedgerAccess ledgerAccess;
     private long lastSupplyC = -1L;
     private long lastSupplyAt = 0L;
 
@@ -44,6 +51,34 @@ public final class EconomyCollector {
         this.analyticsDbPath = analyticsDbPath;
         this.liveMetrics = liveMetrics;
         this.inflationCalculator = inflationCalculator;
+    }
+
+    /** Wiring point for the MySQL-era bridge (null = direct SQLite file path). */
+    public void setLedgerAccess(CoreLedgerAccess ledgerAccess) {
+        this.ledgerAccess = ledgerAccess;
+    }
+
+    /** Functional mirror of Core's SqlWork for the ledger read seam. */
+    @FunctionalInterface
+    private interface LedgerWork<T> {
+        T run(Connection conn) throws SQLException;
+    }
+
+    /**
+     * Runs one read against a Core database: through the CoreLedgerAccess
+     * bridge when Core is in MySQL network mode, otherwise on a short-lived
+     * read-only connection to the given SQLite file. The work object closes
+     * its statements/result sets but NEVER the connection - its lifecycle
+     * belongs to this helper (file mode) or Core's pool (bridge mode).
+     */
+    private <T> T withLedger(String dbPath, LedgerWork<T> work) throws SQLException {
+        CoreLedgerAccess access = this.ledgerAccess;
+        if (access != null) {
+            return access.read(work::run);
+        }
+        try (Connection conn = DirectDb.openReadOnly(dbPath)) {
+            return work.run(conn);
+        }
     }
 
     // ---- periodic readings ----------------------------------------------
@@ -170,12 +205,14 @@ public final class EconomyCollector {
     public JsonObject econNotifications() {
         JsonObject d = new JsonObject();
         d.addProperty("pending", -1);
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM pending_notifications");
-             ResultSet rs = ps.executeQuery();) {
-            if (rs.next()) {
-                d.addProperty("pending", rs.getInt(1));
-            }
+        try {
+            Integer pending = withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM pending_notifications");
+                     ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? Integer.valueOf(rs.getInt(1)) : Integer.valueOf(-1);
+                }
+            });
+            d.addProperty("pending", pending == null ? -1 : pending.intValue());
         }
         catch (Exception e) {
             // Core schema may not have this table in older versions - degrade quietly
@@ -183,41 +220,44 @@ public final class EconomyCollector {
         return d;
     }
 
-    /** market.auctions.active - live listings from auctions.db (read-only). */
+    /** market.auctions.active - live listings (read-only through the bridge). */
     public JsonObject marketAuctionsActive() {
         JsonObject d = new JsonObject();
         d.addProperty("count", 0);
         d.addProperty("totalValueC", 0L);
         JsonArray listings = new JsonArray();
-        try (Connection conn = DirectDb.openReadOnly(this.auctionsDbPath)) {
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT COUNT(*) AS c, COALESCE(SUM(price),0) AS v FROM auction_listings WHERE status = 0 AND expire_timestamp > ?")) {
-                ps.setLong(1, System.currentTimeMillis());
-                try (ResultSet rs = ps.executeQuery();) {
-                    if (rs.next()) {
-                        d.addProperty("count", rs.getInt("c"));
-                        d.addProperty("totalValueC", Math.round(rs.getDouble("v") * 100.0));
+        try {
+            withLedger(this.auctionsDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT COUNT(*) AS c, COALESCE(SUM(price),0) AS v FROM auction_listings WHERE status = 0 AND expire_timestamp > ?")) {
+                    ps.setLong(1, System.currentTimeMillis());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            d.addProperty("count", rs.getInt("c"));
+                            d.addProperty("totalValueC", Math.round(rs.getDouble("v") * 100.0));
+                        }
                     }
                 }
-            }
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT listing_id, seller_name, material_name, quantity, price, expire_timestamp FROM auction_listings"
-                    + "        WHERE status = 0 AND expire_timestamp > ? ORDER BY price DESC LIMIT 10")) {
-                ps.setLong(1, System.currentTimeMillis());
-                long now = System.currentTimeMillis();
-                try (ResultSet rs = ps.executeQuery();) {
-                    while (rs.next()) {
-                        JsonObject l = new JsonObject();
-                        l.addProperty("id", rs.getString("listing_id"));
-                        l.addProperty("seller", rs.getString("seller_name"));
-                        l.addProperty("material", rs.getString("material_name"));
-                        l.addProperty("qty", rs.getInt("quantity"));
-                        l.addProperty("priceC", Math.round(rs.getDouble("price") * 100.0));
-                        l.addProperty("endsInS", Math.max(0L, (rs.getLong("expire_timestamp") - now) / 1000L));
-                        listings.add(l);
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT listing_id, seller_name, material_name, quantity, price, expire_timestamp FROM auction_listings"
+                        + "        WHERE status = 0 AND expire_timestamp > ? ORDER BY price DESC LIMIT 10")) {
+                    ps.setLong(1, System.currentTimeMillis());
+                    long now = System.currentTimeMillis();
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            JsonObject l = new JsonObject();
+                            l.addProperty("id", rs.getString("listing_id"));
+                            l.addProperty("seller", rs.getString("seller_name"));
+                            l.addProperty("material", rs.getString("material_name"));
+                            l.addProperty("qty", rs.getInt("quantity"));
+                            l.addProperty("priceC", Math.round(rs.getDouble("price") * 100.0));
+                            l.addProperty("endsInS", Math.max(0L, (rs.getLong("expire_timestamp") - now) / 1000L));
+                            listings.add(l);
+                        }
                     }
                 }
-            }
+                return null;
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] market.auctions.active unavailable", (Throwable)e);
@@ -230,22 +270,26 @@ public final class EconomyCollector {
     public JsonObject marketAuctionsSold() {
         JsonObject d = new JsonObject();
         JsonArray recent = new JsonArray();
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement(
-                "SELECT id, player_name, amount, item_material, item_quantity, timestamp FROM transaction_log"
-                + "        WHERE type = 'AUCTION_SOLD' ORDER BY id DESC LIMIT 20")) {
-            try (ResultSet rs = ps.executeQuery();) {
-                while (rs.next()) {
-                    JsonObject t = new JsonObject();
-                    t.addProperty("id", rs.getLong("id"));
-                    t.addProperty("buyer", rs.getString("player_name"));
-                    t.addProperty("material", rs.getString("item_material"));
-                    t.addProperty("qty", rs.getInt("item_quantity"));
-                    t.addProperty("priceC", Math.round(rs.getDouble("amount") * 100.0));
-                    t.addProperty("at", rs.getLong("timestamp"));
-                    recent.add(t);
+        try {
+            withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT id, player_name, amount, item_material, item_quantity, timestamp FROM transaction_log"
+                        + "        WHERE type = 'AUCTION_SOLD' ORDER BY id DESC LIMIT 20")) {
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            JsonObject t = new JsonObject();
+                            t.addProperty("id", rs.getLong("id"));
+                            t.addProperty("buyer", rs.getString("player_name"));
+                            t.addProperty("material", rs.getString("item_material"));
+                            t.addProperty("qty", rs.getInt("item_quantity"));
+                            t.addProperty("priceC", Math.round(rs.getDouble("amount") * 100.0));
+                            t.addProperty("at", rs.getLong("timestamp"));
+                            recent.add(t);
+                        }
+                    }
                 }
-            }
+                return null;
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] market.auctions.sold unavailable", (Throwable)e);
@@ -313,24 +357,28 @@ public final class EconomyCollector {
         }
         sql.append(" ORDER BY id DESC LIMIT ?");
         params.add(Math.max(1, Math.min(100, limit)));
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement(sql.toString());) {
-            for (int i = 0; i < params.size(); ++i) {
-                ps.setObject(i + 1, params.get(i));
-            }
-            try (ResultSet rs = ps.executeQuery();) {
-                while (rs.next()) {
-                    JsonObject t = new JsonObject();
-                    t.addProperty("id", rs.getLong("id"));
-                    t.addProperty("type", rs.getString("type"));
-                    t.addProperty("player", rs.getString("player_name"));
-                    t.addProperty("amountC", Math.round(rs.getDouble("amount") * 100.0));
-                    t.addProperty("material", rs.getString("item_material"));
-                    t.addProperty("qty", rs.getInt("item_quantity"));
-                    t.addProperty("at", rs.getLong("timestamp"));
-                    rows.add(t);
+        try {
+            withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+                    for (int i = 0; i < params.size(); ++i) {
+                        ps.setObject(i + 1, params.get(i));
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            JsonObject t = new JsonObject();
+                            t.addProperty("id", rs.getLong("id"));
+                            t.addProperty("type", rs.getString("type"));
+                            t.addProperty("player", rs.getString("player_name"));
+                            t.addProperty("amountC", Math.round(rs.getDouble("amount") * 100.0));
+                            t.addProperty("material", rs.getString("item_material"));
+                            t.addProperty("qty", rs.getInt("item_quantity"));
+                            t.addProperty("at", rs.getLong("timestamp"));
+                            rows.add(t);
+                        }
+                    }
                 }
-            }
+                return null;
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] tx search failed", (Throwable)e);
@@ -348,17 +396,21 @@ public final class EconomyCollector {
         d.addProperty("frozen", false);
         JsonArray tx = new JsonArray();
         String uuid = null;
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement(
-                "SELECT uuid, balance, last_updated FROM player_balances WHERE player_name = ?");) {
-            ps.setString(1, name);
-            try (ResultSet rs = ps.executeQuery();) {
-                if (rs.next()) {
-                    uuid = rs.getString("uuid");
-                    d.addProperty("balC", Math.round(rs.getDouble("balance") * 100.0));
-                    d.addProperty("lastSeen", rs.getLong("last_updated"));
+        try {
+            uuid = withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT uuid, balance, last_updated FROM player_balances WHERE player_name = ?")) {
+                    ps.setString(1, name);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            d.addProperty("balC", Math.round(rs.getDouble("balance") * 100.0));
+                            d.addProperty("lastSeen", rs.getLong("last_updated"));
+                            return rs.getString("uuid");
+                        }
+                    }
                 }
-            }
+                return null;
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] profile balance lookup failed", (Throwable)e);
@@ -386,24 +438,28 @@ public final class EconomyCollector {
 
     private JsonArray recentTransactions(String playerName, int limit) {
         JsonArray rows = new JsonArray();
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement(
-                "SELECT id, type, amount, item_material, item_quantity, timestamp FROM transaction_log"
-                + "        WHERE player_name = ? ORDER BY id DESC LIMIT ?")) {
-            ps.setString(1, playerName);
-            ps.setInt(2, limit);
-            try (ResultSet rs = ps.executeQuery();) {
-                while (rs.next()) {
-                    JsonObject t = new JsonObject();
-                    t.addProperty("id", rs.getLong("id"));
-                    t.addProperty("type", rs.getString("type"));
-                    t.addProperty("amountC", Math.round(rs.getDouble("amount") * 100.0));
-                    t.addProperty("material", rs.getString("item_material"));
-                    t.addProperty("qty", rs.getInt("item_quantity"));
-                    t.addProperty("at", rs.getLong("timestamp"));
-                    rows.add(t);
+        try {
+            withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT id, type, amount, item_material, item_quantity, timestamp FROM transaction_log"
+                        + "        WHERE player_name = ? ORDER BY id DESC LIMIT ?")) {
+                    ps.setString(1, playerName);
+                    ps.setInt(2, limit);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            JsonObject t = new JsonObject();
+                            t.addProperty("id", rs.getLong("id"));
+                            t.addProperty("type", rs.getString("type"));
+                            t.addProperty("amountC", Math.round(rs.getDouble("amount") * 100.0));
+                            t.addProperty("material", rs.getString("item_material"));
+                            t.addProperty("qty", rs.getInt("item_quantity"));
+                            t.addProperty("at", rs.getLong("timestamp"));
+                            rows.add(t);
+                        }
+                    }
                 }
-            }
+                return null;
+            });
         }
         catch (Exception e) {
             // degrade to empty
@@ -415,23 +471,28 @@ public final class EconomyCollector {
     public JsonObject priceTrend(String material, int points) {
         JsonObject d = new JsonObject();
         JsonArray series = new JsonArray();
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement(
-                "SELECT amount, timestamp FROM transaction_log WHERE item_material = ? AND amount > 0"
-                + "        ORDER BY id DESC LIMIT ?");
-             ResultSet rs = ps.executeQuery();) {
-            ps.setString(1, material);
-            ps.setInt(2, Math.max(10, Math.min(500, points)));
-            ArrayList<double[]> tmp = new ArrayList<double[]>();
-            while (rs.next()) {
-                tmp.add(new double[]{rs.getDouble("amount") * 100.0, (double)rs.getLong("timestamp")});
-            }
-            for (int i = tmp.size() - 1; i >= 0; --i) {
-                JsonObject point = new JsonObject();
-                point.addProperty("pC", Math.round(tmp.get(i)[0]));
-                point.addProperty("at", (long)tmp.get(i)[1]);
-                series.add(point);
-            }
+        try {
+            withLedger(this.economyDbPath, conn -> {
+                ArrayList<double[]> tmp = new ArrayList<double[]>();
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT amount, timestamp FROM transaction_log WHERE item_material = ? AND amount > 0"
+                        + "        ORDER BY id DESC LIMIT ?")) {
+                    ps.setString(1, material);
+                    ps.setInt(2, Math.max(10, Math.min(500, points)));
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            tmp.add(new double[]{rs.getDouble("amount") * 100.0, (double)rs.getLong("timestamp")});
+                        }
+                    }
+                }
+                for (int i = tmp.size() - 1; i >= 0; --i) {
+                    JsonObject point = new JsonObject();
+                    point.addProperty("pC", Math.round(tmp.get(i)[0]));
+                    point.addProperty("at", (long)tmp.get(i)[1]);
+                    series.add(point);
+                }
+                return null;
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] price trend failed", (Throwable)e);
@@ -442,14 +503,15 @@ public final class EconomyCollector {
 
     /** Resolves a player name to uuid from the known-player table (null if unknown). */
     public String uuidForName(String name) {
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement("SELECT uuid FROM player_balances WHERE player_name = ?")) {
-            ps.setString(1, name);
-            try (ResultSet rs = ps.executeQuery();) {
-                if (rs.next()) {
-                    return rs.getString("uuid");
+        try {
+            return withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement("SELECT uuid FROM player_balances WHERE player_name = ?")) {
+                    ps.setString(1, name);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        return rs.next() ? rs.getString("uuid") : null;
+                    }
                 }
-            }
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] uuid lookup failed for {}", (Object)name, (Object)e);
@@ -459,12 +521,16 @@ public final class EconomyCollector {
 
     /** Known-player check used by the router (E_NO_SUCH_PLAYER guard). */
     public boolean isKnownPlayer(String name) {
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM player_balances WHERE player_name = ?");) {
-            ps.setString(1, name);
-            try (ResultSet rs = ps.executeQuery();) {
-                return rs.next();
-            }
+        try {
+            Boolean known = withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM player_balances WHERE player_name = ?")) {
+                    ps.setString(1, name);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        return Boolean.valueOf(rs.next());
+                    }
+                }
+            });
+            return known != null && known.booleanValue();
         }
         catch (SQLException e) {
             return false;
@@ -474,14 +540,18 @@ public final class EconomyCollector {
     /** Names of all known players (capped) for econ.grant.all scope=known. */
     public java.util.List<String> knownPlayerNames(int limit) {
         java.util.ArrayList<String> names = new java.util.ArrayList<String>();
-        try (Connection conn = DirectDb.openReadOnly(this.economyDbPath);
-             PreparedStatement ps = conn.prepareStatement("SELECT player_name FROM player_balances ORDER BY last_updated DESC LIMIT ?");) {
-            ps.setInt(1, limit);
-            try (ResultSet rs = ps.executeQuery();) {
-                while (rs.next()) {
-                    names.add(rs.getString("player_name"));
+        try {
+            withLedger(this.economyDbPath, conn -> {
+                try (PreparedStatement ps = conn.prepareStatement("SELECT player_name FROM player_balances ORDER BY last_updated DESC LIMIT ?")) {
+                    ps.setInt(1, limit);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            names.add(rs.getString("player_name"));
+                        }
+                    }
                 }
-            }
+                return null;
+            });
         }
         catch (Exception e) {
             SolidusAnalyticsMod.LOGGER.debug("[Cloud] knownPlayerNames failed", (Throwable)e);

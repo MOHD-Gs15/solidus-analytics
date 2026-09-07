@@ -38,6 +38,7 @@ public class AnalyticsEngine {
     private volatile boolean apiIntegrationAvailable = false;
     private String economyDbPath;
     private String auctionsDbPath;
+    private CoreLedgerAccess ledgerAccess;
     private Path configDirPath;
     private int cleanupTickCounter = 0;
     private static final int CLEANUP_INTERVAL_TICKS = 720000;
@@ -67,31 +68,34 @@ public class AnalyticsEngine {
         // files are absent or frozen pre-cutover copies - every collector
         // must read through Core's own TransactionLog connection instead.
         // A storage cutover performed mid-session needs a restart (or a
-        // server relog) for Analytics to switch ledger paths.
-        CoreLedgerAccess ledgerAccess = null;
+        // server relog) for Analytics to switch ledger paths. Kept on the
+        // engine (2.1.4) so the premium/cloud collectors (FraudDetector,
+        // EconomyCollector) ride the SAME bridge.
+        CoreLedgerAccess engineLedgerAccess = null;
         boolean mysqlMode = SolidusIntegration.getInstance() != null
             && SolidusIntegration.getInstance().isCoreMysqlMode();
         if (mysqlMode) {
-            ledgerAccess = CoreLedgerAccess.create(SolidusIntegration.getInstance().getTransactionLog());
-            if (ledgerAccess != null) {
+            engineLedgerAccess = CoreLedgerAccess.create(SolidusIntegration.getInstance().getTransactionLog());
+            if (engineLedgerAccess != null) {
                 SolidusAnalyticsMod.LOGGER.info("Core is in MySQL network mode - Analytics reads the ledger through Core's own connection (backend-agnostic). Direct SQLite file readers are bypassed.");
             }
             else {
                 SolidusAnalyticsMod.LOGGER.error("Core MySQL mode detected but the CoreLedgerAccess bridge failed to wire - collectors would read a stale/missing economy.db. Update both mods to matching family versions.");
             }
         }
+        this.ledgerAccess = engineLedgerAccess;
         this.liveMetrics = new LiveMetricsTracker(this.database, this.economyDbPath);
-        this.liveMetrics.setLedgerAccess(ledgerAccess);
+        this.liveMetrics.setLedgerAccess(this.ledgerAccess);
         this.liveMetrics.setPollingIntervalSeconds(this.config.getPollingIntervalSeconds());
         this.liveMetrics.start();
         this.snapshotScheduler = new SnapshotScheduler(this.database, this.economyDbPath, this.auctionsDbPath);
         this.snapshotScheduler.setEngineRef(this);
-        this.snapshotScheduler.setLedgerAccess(ledgerAccess);
+        this.snapshotScheduler.setLedgerAccess(this.ledgerAccess);
         this.snapshotScheduler.setSnapshotIntervalMinutes(this.config.getSnapshotIntervalMinutes());
         this.wealthDistributionProvider = new com.solidus.analytics.dashboard.WealthDistributionProvider(this.economyDbPath);
-        this.wealthDistributionProvider.setLedgerAccess(ledgerAccess);
+        this.wealthDistributionProvider.setLedgerAccess(this.ledgerAccess);
         this.inflationCalculator = new InflationCalculator(this.database, this.economyDbPath, this.auctionsDbPath);
-        this.inflationCalculator.setLedgerAccess(ledgerAccess);
+        this.inflationCalculator.setLedgerAccess(this.ledgerAccess);
         // D-3 fix: WeeklyReportGenerator is a PREMIUM feature (ARCHITECTURE §10/§10.4) -
         // it is constructed only inside initializePremium(), exactly like healthScore
         // and fraudDetector. Without a license it stays null and every caller
@@ -119,6 +123,9 @@ public class AnalyticsEngine {
             SolidusAnalyticsMod.LOGGER.info("Premium license verified. Activating premium features...");
             this.healthScore = new EconomyHealthScore(this);
             this.fraudDetector = new FraudDetector(this, this.economyDbPath);
+            // 2.1.4: the fraud scanner follows the same backend-agnostic ledger
+            // bridge as the engine collectors (fail-open premium path).
+            this.fraudDetector.setLedgerAccess(this.ledgerAccess);
             this.discordNotifier = new DiscordWebhookNotifier();
             this.weeklyReportGenerator = new WeeklyReportGenerator(this, this.configDirPath);
             if (this.config.isDiscordEnabled()) {
@@ -264,6 +271,16 @@ public class AnalyticsEngine {
 
     public CloudAgent getCloudAgent() {
         return this.cloudAgent;
+    }
+
+    /**
+     * The CoreLedgerAccess bridge (null in SQLite mode / standalone). Exposed
+     * so the premium (FraudDetector) and cloud (EconomyCollector) collectors
+     * route their Core-database reads through the same backend-agnostic path
+     * as the engine collectors.
+     */
+    public CoreLedgerAccess getLedgerAccess() {
+        return this.ledgerAccess;
     }
 
     /** Called by the mod entrypoint before initialize() so the cloud agent and

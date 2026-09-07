@@ -103,6 +103,9 @@ public final class CloudAgent implements CloudCommandRouter.Sink, TelemetryColle
         this.telemetry = new TelemetryCollector(this);
         this.economy = new EconomyCollector(this.economyDbPath, this.auctionsDbPath, this.analyticsDbPath,
             this.engine.getLiveMetrics(), this.engine.getInflationCalculator());
+        // 2.1.4: cloud telemetry follows the same backend-agnostic ledger
+        // bridge as the engine collectors (null in SQLite mode = direct files).
+        this.economy.setLedgerAccess(this.engine.getLedgerAccess());
         this.router = new CloudCommandRouter(this, this);
         this.cloudExec = Executors.newScheduledThreadPool(2, r -> {
             Thread t = new Thread(r, "solidus-cloud-worker");
