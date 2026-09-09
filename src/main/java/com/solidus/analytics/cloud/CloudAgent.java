@@ -640,9 +640,16 @@ public final class CloudAgent implements CloudCommandRouter.Sink, TelemetryColle
         // path is persisted to cloud_command_log, the relay's audit ledger and
         // broadcast as cmd.audit to every connected client (§12/§6.7), i.e.
         // readable by roles below owner. The operator reads it from the local
-        // 0600 config file (or this single log line on the server they own).
-        SolidusAnalyticsMod.LOGGER.warn("[Cloud] Pairing secret rotated. New secret (also in {}): {}",
-            (Object)this.configDir.resolve("cloud.properties").toAbsolutePath(), (Object)fresh);
+        // 0600 config file.
+        // SECURITY (SA2-012, CWE-532): the old "single log line" printed the
+        // FULL secret - contradicting B-13, which keeps the INITIAL secret
+        // out of the log entirely (logs are read by tools/backups/hosting
+        // panels with wider reach than a 0600 file). Rotation is now
+        // consistent with generation: the log points at the file, and the
+        // secret itself never appears.
+        SolidusAnalyticsMod.LOGGER.warn(
+            "[Cloud] Pairing secret rotated ({} chars, [0-9a-f]). Read it from the 0600 file: {}",
+            fresh.length(), (Object)this.configDir.resolve("cloud.properties").toAbsolutePath());
         this.client.forceReconnect();  // B-5: re-hellos with the fresh secret via the hello supplier
         return fresh;
     }

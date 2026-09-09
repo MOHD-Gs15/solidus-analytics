@@ -334,12 +334,18 @@ public class DashboardManager {
         }
         Path keyFile = this.configDir.resolve(".dashboard-key");
         if (Files.exists(keyFile, new LinkOption[0])) {
+            // SECURITY (SA2-014, CWE-732): the file holds the dashboard
+            // password IN PLAINTEXT and lives across restarts - advisory
+            // "chmod 600" advice is not a control. Enforce rw------- like
+            // CloudAgentConfig does for cloud.properties (POSIX only; on
+            // non-POSIX filesystems the call is skipped silently).
+            enforceKeyFilePermissions(keyFile);
             try {
                 String keyPassword = Files.readString(keyFile).trim();
                 if (!keyPassword.isBlank()) {
                     if (this.encryption.unlock(keyPassword.toCharArray(), storedHash)) {
                         this.migrateLegacyHashIfAny(keyPassword);
-                        SolidusAnalyticsMod.LOGGER.info("Dashboard auto-unlocked via .dashboard-key file. Ensure this file has restricted permissions (chmod 600).");
+                        SolidusAnalyticsMod.LOGGER.info("Dashboard auto-unlocked via .dashboard-key file (permissions enforced to 0600).");
                         return true;
                     }
                     SolidusAnalyticsMod.LOGGER.warn(".dashboard-key file found but password incorrect. Falling back to manual unlock.");
@@ -350,6 +356,20 @@ public class DashboardManager {
             }
         }
         return false;
+    }
+
+    /** SA2-014: best-effort rw------- on the plaintext dashboard-key file. */
+    private void enforceKeyFilePermissions(Path keyFile) {
+        try {
+            java.util.Set<java.nio.file.attribute.PosixFilePermission> perms =
+                java.util.EnumSet.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                                     java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
+            Files.setPosixFilePermissions(keyFile, perms);
+        }
+        catch (UnsupportedOperationException | java.io.IOException e) {
+            // Non-POSIX filesystem (e.g. Windows) - the JVM cannot enforce
+            // POSIX bits there; nothing to do.
+        }
     }
 
     private boolean getBool(String key, boolean defaultValue) {

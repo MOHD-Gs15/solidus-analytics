@@ -19,6 +19,11 @@
     <form id="login-form">
       <input id="login-name" autocomplete="username" placeholder="Username" required>
       <input id="login-pass" type="password" autocomplete="current-password" placeholder="Password" required>
+      <!-- SA2-021: the session token is sessionStorage-only by default; the
+           operator opts INTO a persistent 30-day token explicitly. -->
+      <label class="muted" style="display:flex;gap:8px;align-items:center;font-size:12px">
+        <input id="login-remember" type="checkbox" style="width:auto"> Remember on this device (30 days)
+      </label>
       <button class="primary" type="submit">Sign in</button>
       <div id="login-error" class="error hidden"></div>
     </form>

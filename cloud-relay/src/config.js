@@ -7,7 +7,20 @@ const dataDir = process.env.RELAY_DATA_DIR || path.join(__dirname, '..', 'data')
 
 const config = {
   port: Number(process.env.RELAY_PORT || 8787),
-  host: process.env.RELAY_HOST || '0.0.0.0',
+  // SECURITY (SA2-022): bind loopback by default. The documented deployment
+  // fronts the relay with a TLS-terminating reverse proxy ON THE SAME HOST,
+  // so 127.0.0.1 serves it; binding 0.0.0.0 now requires an explicit
+  // RELAY_HOST so a bare `npm start` can never expose plaintext auth frames
+  // to the network by accident.
+  host: process.env.RELAY_HOST || '127.0.0.1',
+  // SECURITY (SA2-007): set RELAY_TRUST_PROXY=true ONLY when the relay runs
+  // behind your own reverse proxy that OVERWRITES/appends X-Forwarded-For.
+  // When enabled, the login limiter keys on the rightmost XFF entry (the
+  // client address as seen by YOUR proxy) instead of the proxy's IP, so one
+  // anonymous visitor can no longer lock out every operator behind the
+  // shared proxy address. Leave it unset for direct exposure (XFF is then
+  // attacker-controlled and MUST NOT be trusted).
+  trustProxy: process.env.RELAY_TRUST_PROXY === 'true',
   dataDir,
   // P2 durable store (node:sqlite, WAL): event rings, offline command queue,
   // financial idempotency. Survives relay restarts. Requires node >= 22.5.
@@ -25,6 +38,16 @@ const config = {
     broadcastPerMin: 6,
     dPerHour: 3,
     commandQueue: 64,
+    // ---- SA2-009 resource caps (cheap-before-expensive, §9 philosophy) ----
+    maxSessionsPerUser: 16,          // bounded users.json growth (O(n²) writes)
+    maxPrepareTokensPerUser: 8,      // a viewer cannot flood prepareTokens
+    maxPrepareTokensTotal: 512,
+    maxWsTickets: 256,               // bounded ticket map
+    wsTicketPerMin: 10,              // /api/ws-ticket ceiling per user
+    maxAppSockets: 256,              // global concurrent /app upgrades
+    maxAgentSockets: 64,             // global concurrent /agent upgrades
+    maxSocketsPerIp: 8,              // pre-auth FD/memory exhaustion cap
+    rejectBudgetPerMin: 90,          // SA2-004: invalid-frame budget per user
   },
   heartbeatTimeoutMs: 120_000,      // §4.1 - agent.heartbeat.lost
   eventRing: 200,                   // §6.6
@@ -34,6 +57,9 @@ const config = {
   idemCacheMs: 10 * 60_000,         // §8
   commandTtlMs: 60_000,             // §3 (D-class 90 s handled per command)
   commandRetentionDays: 7,          // P2: done command rows kept for forensics
+  // SA2-003: a forwarded args object may never exceed this size - the agent
+  // re-validates semantically, the relay keeps the wire cheap.
+  maxArgsBytes: 8192,
   vapid: {
     publicKey: process.env.VAPID_PUBLIC_KEY || '',
     privateKey: process.env.VAPID_PRIVATE_KEY || '',

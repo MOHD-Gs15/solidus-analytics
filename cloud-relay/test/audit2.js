@@ -92,7 +92,7 @@ async function main() {
   const users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
   users.users.push({
     id: 'u-mangled', name: 'mangled', salt: users.users[0].salt,
-    hash: users.users[0].hash, role: 'Admin', created: Date.now(),
+    hash: users.users[0].hash, scryptN: users.users[0].scryptN, role: 'Admin', created: Date.now(),
   });
   fs.writeFileSync(usersFile, JSON.stringify(users));
 
@@ -128,8 +128,12 @@ async function main() {
       'C-1: viewer cannot manage alert rules');
 
     // owner cannot muzzle the builtin heartbeat rule either
+    // (SA2-006: alert.rule.manage is now tenant-scoped, so a server must be
+    // selected first - same contract the PWA follows)
     const os1 = await appSocket(own.token);
     await sleep(200);
+    send(os1.ws, { sv: 1, id: 'sel-o', t: 'evt', type: 'select', d: { serverId: 'srv-a' } });
+    await sleep(150);
     send(os1.ws, { sv: 1, id: 'q3', t: 'cmd', cmd: 'alert.rule.manage', args: { action: 'update', rule: { id: 'builtin-heartbeat', enabled: false } } });
     const q3 = await waitFor(() => os1.messages.find((m) => m.type === 'cmd.result' && m.d?.rid === 'q3'));
     assert(q3 && q3.d.status === 'rejected' && q3.d.code === 'E_ARGS',

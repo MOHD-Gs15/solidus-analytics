@@ -90,6 +90,7 @@ public final class LicenseVerifier {
     static volatile String testPublicKeyB64 = null;
 
     private final Path licenseKeyPath;
+    private final Path clockAnchorPath;
     private volatile VerificationState state = VerificationState.UNVERIFIED;
     private volatile String licenseeName;
     private volatile LocalDate expiryDate;
@@ -99,6 +100,7 @@ public final class LicenseVerifier {
 
     public LicenseVerifier(Path configDir) {
         this.licenseKeyPath = configDir.resolve("license.key");
+        this.clockAnchorPath = configDir.resolve("license-clock");
     }
 
     public VerificationState initialize() {
@@ -133,11 +135,62 @@ public final class LicenseVerifier {
     public void shutdown() {
     }
 
+    /**
+     * SECURITY (SA2-011, CWE-613): monotonic clock anchor for expiry checks.
+     * The expiry used to be compared against the HOST clock alone, so rolling
+     * the clock back (or restoring an old VM snapshot) extended a dated
+     * license forever. This anchor persists the highest UTC date ever seen
+     * (file {@code <configDir>/license-clock}, 0600) and expiry checks run
+     * against max(today, anchor). A rollback can no longer rewind the
+     * effective date past the anchor; a frozen snapshot resumes from the
+     * date it froze on, which is the best a fully-offline verifier can do
+     * (LICENSE-SYSTEM.md documents the residual snapshot risk - the online
+     * re-check remains the roadmap item it always was).
+     */
+    private LocalDate effectiveTodayUtc() {
+        LocalDate now = LocalDate.now(ZoneOffset.UTC);
+        LocalDate anchor = now;
+        try {
+            if (Files.exists(this.clockAnchorPath)) {
+                String s = Files.readString(this.clockAnchorPath).trim();
+                if (s.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                    LocalDate stored = LocalDate.parse(s, DateTimeFormatter.ISO_LOCAL_DATE);
+                    if (stored.isAfter(anchor)) anchor = stored;
+                }
+            }
+        } catch (Exception ignored) {
+            // unreadable/corrupt anchor: fall back to the host clock
+        }
+        if (anchor.isAfter(now)) {
+            writeClockAnchor(anchor);
+        }
+        return anchor;
+    }
+
+    /** Best-effort 0600 persistence of the high-water mark. */
+    private void writeClockAnchor(LocalDate date) {
+        try {
+            Files.writeString(this.clockAnchorPath, date.toString(),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+                java.nio.file.StandardOpenOption.WRITE);
+            try {
+                java.util.Set<java.nio.file.attribute.PosixFilePermission> perms =
+                    java.util.EnumSet.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                                         java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
+                Files.setPosixFilePermissions(this.clockAnchorPath, perms);
+            } catch (UnsupportedOperationException | java.io.IOException ignored) {
+                // non-POSIX filesystem - skip
+            }
+        } catch (Exception ignored) {
+            // read-only config dir etc. - the anchor is best-effort
+        }
+    }
+
     public boolean isPremiumEnabled() {
         if (this.state != VerificationState.VERIFIED) {
             return false;
         }
-        if (this.expiryDate != null && LocalDate.now(ZoneOffset.UTC).isAfter(this.expiryDate)) {
+        if (this.expiryDate != null && effectiveTodayUtc().isAfter(this.expiryDate)) {
             this.state = VerificationState.EXPIRED;
             this.errorMessage = "License expired on " + this.expiryDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
             SolidusAnalyticsMod.LOGGER.warn("License has expired: {}", this.errorMessage);
@@ -173,7 +226,7 @@ public final class LicenseVerifier {
         if (this.expiryDate == null) {
             return -1L;
         }
-        long days = ChronoUnit.DAYS.between(LocalDate.now(ZoneOffset.UTC), this.expiryDate);
+        long days = ChronoUnit.DAYS.between(effectiveTodayUtc(), this.expiryDate);
         return Math.max(0L, days);
     }
 
@@ -312,7 +365,7 @@ public final class LicenseVerifier {
                     + " (expected YYYY-MM-DD or " + PERPETUAL + ")";
                 return VerificationState.INVALID;
             }
-            if (LocalDate.now(ZoneOffset.UTC).isAfter(this.expiryDate)) {
+            if (effectiveTodayUtc().isAfter(this.expiryDate)) {
                 this.errorMessage = "License expired on " + this.expiryDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
                 return VerificationState.EXPIRED;
             }

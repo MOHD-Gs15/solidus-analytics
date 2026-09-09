@@ -1,6 +1,6 @@
 # Solidus Analytics — Server-Side Minecraft Fabric Mod
 
-[![Solidus Family](https://img.shields.io/badge/Solidus_Family-2.1.4-8B5CF6.svg)](VERSIONING.md)
+[![Solidus Family](https://img.shields.io/badge/Solidus_Family-2.1.5-8B5CF6.svg)](VERSIONING.md)
 [![Platform](https://img.shields.io/badge/Platform-Fabric-blue.svg)](https://fabricmc.net/)
 [![Minecraft](https://img.shields.io/badge/Minecraft-26.1.x-green.svg)](https://www.minecraft.net/)
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://adoptium.net/)
@@ -158,7 +158,7 @@ Solidus Analytics never requires Solidus Core to boot. The integration bridge re
 
 The web server is **off by default**. To turn it on safely:
 
-1. Set a password: `/analytics dashboard setup <password>`
+1. Set a password — prefer the one-shot file path (SA2-013: chat commands are logged verbatim by vanilla): `/analytics dashboard setupfile <path>` (the file is deleted after the first read), or `/analytics dashboard setup <password>` if log exposure is acceptable to you
 2. Edit `config/solidus-analytics/dashboard.properties`: `webserver.enabled=true`
 3. Restart the server and open `http://127.0.0.1:9090`
 4. To expose it beyond localhost, use an HTTPS reverse proxy — never port-forward the raw server

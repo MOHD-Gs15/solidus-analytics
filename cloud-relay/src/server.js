@@ -21,6 +21,8 @@ const { Store } = require('./store');
 const { RelayDb } = require('./db');
 const { AlertEngine, pushReady } = require('./alerts');
 const { LoginLimiter } = require('./login-limiter');
+const { validateArgs, sanitizeAlertRule } = require('./args-schema');
+const { isSafePushEndpoint } = require('./endpoint-guard');
 
 const store = new Store();
 const alerts = new AlertEngine(store);
@@ -36,6 +38,16 @@ const prepareTokens = new Map();  // token -> { userId, cmd, target, preparedAt 
 const rate = new Map();           // userId -> { financial:[], w2:[], w1:[], r:[], d:[], broadcast:[] }
 const pending = new Map();        // rid -> { ws (originator), userId }
 const wsTickets = new Map();      // ticket -> { sessionToken, userId, expiresAt }  (single-use, P1-5)
+// SA2-020: in-flight financial idempotency keys - a duplicate idemKey whose
+// first execution has NOT resolved yet is refused instead of being silently
+// re-forwarded to the agent (§8 promise; the agent's 48 h table stays the
+// last line of defense).
+const inFlightIdem = new Set();   // `${userId}:${cmd}:${idemKey}`
+// SA2-020: per-rid timeout timers so an agent ack (§6.1 step 6) re-bases the
+// 120 s watchdog on the ack instead of the forwarding instant.
+const pendingTimers = new Map();  // rid -> Timeout
+// SA2-009: live socket accounting for the pre-auth upgrade caps.
+const socketsPerIp = new Map();   // ip -> count of live ws (agent + app)
 
 // P2 durable rings: per-server event replay buffers, seeded from relay.db at
 // boot and kept in sync on every push. Independent of agent sockets, so the
@@ -74,6 +86,29 @@ function nowMs() { return Date.now(); }
 function j(obj) { return JSON.stringify(obj); }
 
 function newId(prefix) { return prefix + '-' + crypto.randomUUID().slice(0, 13); }
+
+// SECURITY (SA2-001): `new URL(req.url, ...)` THROWS on a raw absolute-form
+// request line ("GET http://a:70000/ HTTP/1.1" -> ERR_INVALID_URL before
+// any try/catch). One unauthenticated packet used to kill the whole relay:
+// agent sockets, store&forward, alerts, audit and every tenant's PWA feed
+// died together. Every request-line parse now goes through this guard.
+function parseUrlOrNull(raw) {
+  try { return new URL(raw, 'http://localhost'); } catch { return null; }
+}
+
+// SECURITY (SA2-007): with RELAY_TRUST_PROXY=true the login limiter keys on
+// the RIGHTMOST X-Forwarded-For entry - the address YOUR proxy appended -
+// instead of the proxy's own IP, so one anonymous visitor can no longer
+// lock out every operator behind the shared proxy address. Without the flag
+// XFF is attacker-controlled and is never trusted.
+function clientIpOf(req) {
+  const direct = req.socket?.remoteAddress || '';
+  if (!config.trustProxy) return direct;
+  const xff = String(req.headers['x-forwarded-for'] || '');
+  if (!xff) return direct;
+  const parts = xff.split(',').map((x) => x.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : direct;
+}
 
 function agentOf(serverId) {
   const a = agents.get(serverId);
@@ -148,6 +183,16 @@ function applySecurityHeaders(req, res, isApi) {
 // single-use ticket, then opens the socket with ?ticket=. The session token
 // itself never crosses the wire again.
 function issueWsTicket(sessionToken, userId) {
+  // SA2-009: the ticket map is bounded - expired/oldest entries are dropped
+  // so a client cannot grow it unboundedly between 60 s sweeps.
+  if (wsTickets.size >= config.limits.maxWsTickets) {
+    const now = nowMs();
+    for (const [k, v] of wsTickets) if (v.expiresAt < now) wsTickets.delete(k);
+    while (wsTickets.size >= config.limits.maxWsTickets) {
+      const oldest = wsTickets.keys().next().value;
+      wsTickets.delete(oldest);
+    }
+  }
   const ticket = 'wt-' + crypto.randomBytes(32).toString('hex');
   wsTickets.set(ticket, { sessionToken, userId, expiresAt: nowMs() + config.wsTicketTtlMs });
   return { ticket, expiresAt: nowMs() + config.wsTicketTtlMs };
@@ -206,14 +251,34 @@ function handleClientCommand(ws, client, frame) {
   const agent = agentOf(serverId);
   const caps = agent ? agent.caps : null;
 
+  // SECURITY (SA2-004): every rejection becomes an audit row, so the row
+  // itself must be BOUNDED - attacker-controlled strings (cmd, reason,
+  // idemKey, ...) used to be written to audit.jsonl verbatim at up to the
+  // 256 KiB frame cap, synchronously, BEFORE any rate ceiling. Now every
+  // free-text field is truncated to the §6.4 caps and the args payload is
+  // replaced by its size.
+  const clip = (v, n) => String(v ?? '').slice(0, n);
+  const auditRowFor = (code) => ({
+    kind: 'cmd', rid: clip(frame.rid || frame.id, 64), serverId: serverId || null,
+    cmd: clip(cmd || 'unknown', 64), target: clip(target ?? '', 64),
+    reason: clip(frame.reason || '', 256), actorId: client.user.id,
+    actorName: client.user.name, actorRole: client.role, status: 'rejected', code,
+    error: clip(frame.error || '', 256), receivedAt: nowMs(),
+    idemKey: clip(frame.idemKey || '', 64),
+  });
+
   /** Every rejection is ALSO an audit row (§12: accepted or rejected). */
   const reject = (code, error, data) => {
-    store.audit({
-      kind: 'cmd', rid: frame.rid || frame.id, serverId: serverId || null, cmd: cmd || 'unknown',
-      target: target ?? '', reason: frame.reason || '', actorId: client.user.id,
-      actorName: client.user.name, actorRole: client.role, status: 'rejected', code,
-      error: error || null, receivedAt: nowMs(), idemKey: frame.idemKey || null,
-    });
+    // SA2-004: pre-rate-limit rejections are still bounded by a per-user
+    // budget. Beyond it the socket is closed without another ledger write -
+    // a viewer session can no longer grow the ledger by MBs/second nor
+    // block the event loop with synchronous appends.
+    const budget = rateOf(client.user.id).rejects || (rateOf(client.user.id).rejects = []);
+    if (!pushRate(budget, config.limits.rejectBudgetPerMin)) {
+      try { ws.close(4008, 'too many invalid frames'); } catch {}
+      return;
+    }
+    store.audit(auditRowFor(code));
     ws.send(j(rejectResult(frame, 'rejected', code, error, data)));
   };
 
@@ -226,6 +291,10 @@ function handleClientCommand(ws, client, frame) {
     if (RANK[client.role] === undefined || RANK[client.role] < RANK[minRole]) {
       return reject('E_ROLE', `relay-side command requires ${minRole}`);
     }
+    // SA2-003: relay-side commands get the same args schema treatment
+    // (audit.query/export/session.*/alert.* all have schemas now).
+    const argsErr = validateArgs(cmd, frame);
+    if (argsErr) return reject('E_ARGS', argsErr);
     const lim = limitFor({ risk: 'R' }, cmd);
     if (!pushRate(rateOf(client.user.id)[lim.list], lim.max)) {
       return reject('E_RATE', 'rate ceiling exceeded', { retryAfterMs: 30000 });
@@ -244,6 +313,14 @@ function handleClientCommand(ws, client, frame) {
   if (caps && !caps.includes(cmd) && meta.risk !== 'R') {
     return reject('E_CORE_MISSING', 'agent did not advertise this capability');
   }
+
+  // SECURITY (SA2-003): the relay is the FIRST enforcement point for the
+  // args schema (PROTOCOL §6.1 step 2 + §6.4): unknown keys -> E_ARGS,
+  // closed enums, bounded ints, length-capped strings. The agent still
+  // re-validates everything - but a weak/old agent is no longer the only
+  // defense, and unvalidated payloads no longer flow into the ledger.
+  const argsErr = validateArgs(cmd, frame);
+  if (argsErr) return reject('E_ARGS', argsErr);
 
   // rate ceilings (G4)
   const lim = limitFor(meta, cmd);
@@ -270,13 +347,32 @@ function handleClientCommand(ws, client, frame) {
     if (!frame.reason || !String(frame.reason).trim()) {
       return reject('E_CONFIRM_MISSING', 'reason is mandatory for W2/D');
     }
-    if (frame.confirm?.typed !== target) {
-      return reject('E_CONFIRM_MISMATCH', 'confirm.typed must equal target exactly');
+    // SECURITY (SA2-010): commands WITHOUT a target can never satisfy
+    // `typed !== target` with the empty comparison - the PWA legitimately
+    // sends typed:'CONFIRM' there, so every D-class emergency control
+    // (circuit breaker, server.stop/restart) was unexecutable from the
+    // official UI (fail-closed broken into fail-dead). The expected word
+    // for a targetless frame is the canonical 'CONFIRM'; with a target the
+    // typed-name rule is unchanged.
+    const expectedTyped = String(target || '').length ? target : 'CONFIRM';
+    if (frame.confirm?.typed !== expectedTyped) {
+      return reject('E_CONFIRM_MISMATCH',
+        String(target || '').length
+          ? 'confirm.typed must equal target exactly'
+          : 'confirm.typed must be "CONFIRM" for targetless commands');
     }
   }
 
   // destructive two-phase (§7): prepare token + password re-entry + hold
   if (meta.risk === 'D') {
+    // SA2-020: §9 "1 concurrent pending D per server" - while a destructive
+    // command is still in flight for this server, a second one is refused
+    // instead of racing it.
+    for (const p of pending.values()) {
+      if (p.serverId === serverId && COMMAND_META[p.cmd]?.risk === 'D') {
+        return reject('E_BUSY', 'another destructive command is in flight for this server');
+      }
+    }
     const tok = prepareTokens.get(frame.confirm?.token);
     const okToken = tok && tok.userId === client.user.id && tok.cmd === cmd
       && String(tok.target || '') === String(target || '') && nowMs() < tok.validUntil && !tok.used;
@@ -284,6 +380,7 @@ function handleClientCommand(ws, client, frame) {
     if (!frame.confirm?.password || !store.verifyPassword(client.user, frame.confirm.password)) {
       return reject('E_AUTH', 'password re-entry failed');
     }
+    store.maybeRehash(client.user, frame.confirm.password);
     if (nowMs() - tok.preparedAt < config.destructiveHoldMs) {
       return reject('E_HOLD', `destructive hold not elapsed (${config.destructiveHoldMs}ms)`);
     }
@@ -304,15 +401,22 @@ function handleClientCommand(ws, client, frame) {
     }
     if (prior) {
       store.audit({
-        kind: 'cmd', rid: frame.rid || frame.id, serverId, cmd, target: target ?? '',
-        reason: frame.reason || '', actorId: client.user.id, actorName: client.user.name,
+        kind: 'cmd', rid: clip(frame.rid || frame.id, 64), serverId, cmd: clip(cmd, 64),
+        target: clip(target ?? '', 64), reason: clip(frame.reason || '', 256),
+        actorId: client.user.id, actorName: client.user.name,
         actorRole: client.role, status: 'applied', code: 'E_IDEM_DUP', receivedAt: nowMs(),
-        idemKey: frame.idemKey, duplicate: true,
+        idemKey: clip(frame.idemKey, 64), duplicate: true,
       });
       const dup = { ...prior.d, duplicate: true };
       const res = rejectResult(frame, prior.status, prior.code, prior.error, dup);
       return ws.send(j(res));
     }
+    // SA2-020 (§8): a duplicate whose first execution is STILL in flight is
+    // refused instead of being silently re-forwarded to the agent.
+    if (inFlightIdem.has(key)) {
+      return reject('E_IDEM_INFLIGHT', 'duplicate idemKey while the first execution is still running');
+    }
+    inFlightIdem.add(key);
   }
 
   // forward to the agent (or queue while offline, §6.6)
@@ -339,9 +443,10 @@ function handleClientCommand(ws, client, frame) {
     }
   }
 
-  store.audit({ kind: 'cmd', rid, serverId, cmd, target: target ?? '', reason: frame.reason || '',
-    actorId: client.user.id, actorName: client.user.name, actorRole: client.role,
-    status: agent ? 'sent' : 'queued', receivedAt: nowMs(), idemKey: frame.idemKey || null, args: frame.args || {} });
+  store.audit({ kind: 'cmd', rid: clip(rid, 64), serverId, cmd: clip(cmd, 64), target: clip(target ?? '', 64),
+    reason: clip(frame.reason || '', 256), actorId: client.user.id, actorName: client.user.name, actorRole: client.role,
+    status: agent ? 'sent' : 'queued', receivedAt: nowMs(), idemKey: clip(frame.idemKey || '', 64),
+    argsBytes: Buffer.byteLength(JSON.stringify(frame.args || {})) });
   // P2 durable lifecycle: the row moves queued -> sent -> done and survives
   // relay restarts; pending keeps the live originator socket only.
   relayDb.insertCommand({ rid, serverId, userId: client.user.id, cmd, target: target ?? '',
@@ -351,7 +456,10 @@ function handleClientCommand(ws, client, frame) {
 
   if (agent) {
     agent.ws.send(j(forward));
-    setTimeout(() => resolvePending(rid, 'timeout', null, 'no agent result within 120s'), 120000).unref();
+    // SA2-020: the watchdog timer is CANCELLED and re-based when the agent
+    // acks the frame (§6.1 step 6) instead of silently measuring from the
+    // forwarding instant.
+    pendingTimers.set(rid, setTimeout(() => resolvePending(rid, 'timeout', null, 'no agent result within 120s'), 120000).unref());
   } else {
     // store&forward while offline (§6.6) - the queue IS relay.db now, so a
     // relay crash between accept and flush no longer drops commands.
@@ -365,6 +473,9 @@ function resolvePending(rid, status, code, error, data, tookMs) {
   const p = pending.get(rid) || relayDb.commandContext(rid);
   if (!p) return;
   pending.delete(rid);
+  const t = pendingTimers.get(rid);
+  if (t) { clearTimeout(t); pendingTimers.delete(rid); }
+  if (p.idemKey) inFlightIdem.delete(`${p.userId}:${p.cmd}:${p.idemKey}`);
   relayDb.finishCommand(rid, { status, code: code || null, error: error || null, data: data || null });
   // relay-side idempotency cache for financial commands (G3). Written AFTER
   // the terminal result: a crash between the two re-forwards on retry, and
@@ -413,13 +524,20 @@ function relaySideCommand(ws, client, frame) {
       // audit C-1: rows are scoped to the caller's own servers (owners see
       // everything; the ledger previously leaked cross-tenant command history
       // to any admin, and - pre-C-1 - to ANY viewer).
-      return done('applied', { rows: store.auditQuery({ ...args, limit: args?.limit || 100, serverIds: ownedServerIds(client) }) });
+      // SA2-020: the §12 cap for audit.query is 200 rows (2000 is the
+      // EXPORT cap only).
+      return done('applied', { rows: store.auditQuery({ ...args, limit: Math.min(args?.limit || 100, 200), serverIds: ownedServerIds(client) }) });
     case 'audit.export':
       return done('applied', { format: args?.format || 'json', rows: store.auditQuery({ ...args, limit: 2000, serverIds: ownedServerIds(client) }) });
     case 'alert.silence': {
-      store.alerts.silenceUntil = nowMs() + Math.min(1440, Math.max(5, args?.minutes || 30)) * 60000;
+      // SECURITY (SA2-006): the silence window is PER-SERVER now. One owner
+      // silencing the relay muted every tenant's alerts - including the
+      // non-deletable heartbeat watchdog - with a single command.
+      const minutes = Math.min(1440, Math.max(5, args?.minutes || 30));
+      store.alerts.silence = store.alerts.silence || {};
+      store.alerts.silence[client.serverId] = nowMs() + minutes * 60000;
       store.saveAlerts();
-      return done('applied', { silenceUntil: store.alerts.silenceUntil });
+      return done('applied', { serverId: client.serverId, silenceUntil: store.alerts.silence[client.serverId] });
     }
     case 'alert.rule.templates': {
       const tpl = {
@@ -428,28 +546,44 @@ function relaySideCommand(ws, client, frame) {
         cpu: { metric: 'cpu', op: '>', threshold: 95, forMs: 300000 },
       }[args?.template];
       if (!tpl) return done('rejected', null, 'E_ARGS');
+      if (!client.serverId) return done('rejected', null, 'E_UNKNOWN_SERVER');
       store.alerts.rules.push({ id: newId('rule'), serverId: client.serverId, ...tpl, channels: ['push'], silenceMin: 15, enabled: true });
       store.saveAlerts();
       return done('applied', { installed: tpl });
     }
     case 'alert.rule.manage': {
+      // SECURITY (SA2-006, CWE-862): alert rules were the ONE object family
+      // without tenant isolation - an owner could delete/update rules of
+      // OTHER tenants and inject rules targeting foreign servers (and their
+      // push devices). Every branch is now scoped to the caller's selected
+      // server, client-supplied serverId/id/builtin are stripped, and all
+      // rule fields pass a closed sanitizer.
+      if (!client.serverId) return done('rejected', null, 'E_UNKNOWN_SERVER');
       if (args?.action === 'delete') {
-        store.alerts.rules = store.alerts.rules.filter((r) => r.id !== args.rule?.id || r.builtin);
+        const before = store.alerts.rules.length;
+        store.alerts.rules = store.alerts.rules.filter((r) =>
+          r.id !== args.rule?.id || r.builtin || r.serverId !== client.serverId);
         store.saveAlerts();
-        return done('applied', { rules: store.alerts.rules.length });
+        return done('applied', { deleted: before - store.alerts.rules.length, rules: store.alerts.rules.length });
       }
       if (args?.action === 'update' && args.rule?.id) {
-        const r = store.alerts.rules.find((x) => x.id === args.rule.id);
+        const r = store.alerts.rules.find((x) => x.id === args.rule.id && x.serverId === client.serverId);
         if (!r) return done('rejected', null, 'E_ARGS');
         // audit C-1: §13 says the heartbeat rule is "built-in, non-deletable";
         // the delete branch protected it, the update branch did not - any user
         // could muzzle the one alert that watches agent liveness.
         if (r.builtin) return done('rejected', null, 'E_ARGS');
-        Object.assign(r, args.rule, { id: r.id });
+        const patch = sanitizeAlertRule(args.rule);
+        if (!patch) return done('rejected', null, 'E_ARGS');
+        Object.assign(r, patch, { id: r.id, serverId: r.serverId });
         store.saveAlerts();
         return done('applied', { rule: r });
       }
-      const rule = { id: newId('rule'), serverId: client.serverId, ...(args?.rule || {}), enabled: args?.rule?.enabled !== false };
+      const clean = sanitizeAlertRule(args?.rule || {});
+      if (!clean) return done('rejected', null, 'E_ARGS');
+      // serverId is stamped LAST - a client-supplied args.rule.serverId can
+      // no longer re-point the rule at another tenant's server.
+      const rule = { ...clean, id: newId('rule'), serverId: client.serverId, enabled: clean.enabled !== false };
       store.alerts.rules.push(rule);
       store.saveAlerts();
       return done('applied', { rule });
@@ -464,6 +598,9 @@ function relaySideCommand(ws, client, frame) {
 
 // ---------- agent socket (/agent) --------------------------------------------
 
+const SERVER_ID_RE = /^[A-Za-z0-9_\-]{4,32}$/;
+const SECRET_RE = /^[0-9a-f]{64}$/;   // §4.1/§11: 64-hex pairing secret
+
 function setupAgentSocket(wss) {
   wss.on('connection', (ws) => {
     let serverId = null;
@@ -474,8 +611,22 @@ function setupAgentSocket(wss) {
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return ws.close(4000, 'bad json'); }
+      // SA2-020: protocol-version check (§3/§14) - frames targeting another
+      // major version are refused instead of silently misinterpreted.
+      if (msg.sv !== config.protoMin) {
+        return ws.close(4002, 'unsupported protocol version');
+      }
       if (msg.t === 'evt' && msg.type === 'hello') {
-        const rec = store.verifyPairing(String(msg.serverId || '').slice(0, 64), String(msg.secret || '').slice(0, 256));
+        // SA2-020: pairing material format is validated BEFORE the hash
+        // lookup (§4.1: serverId 4..32 charset, secret 64-hex).
+        const sid = String(msg.serverId || '');
+        const sec = String(msg.secret || '');
+        if (!SERVER_ID_RE.test(sid) || !SECRET_RE.test(sec)) {
+          store.audit({ kind: 'auth', serverId: sid.slice(0, 64), status: 'rejected', code: 'E_ARGS' });
+          ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'hello.err', d: { code: 'E_ARGS' } }));
+          return ws.close(4001, 'format');
+        }
+        const rec = store.verifyPairing(sid, sec);
         if (!rec) {
           // audit C-7: failed hellos are attacker-controlled and were written
           // to the 90-day ledger verbatim (disk exhaustion + forensic noise).
@@ -491,7 +642,14 @@ function setupAgentSocket(wss) {
         serverId = msg.serverId;
         const prev = agents.get(serverId);
         if (prev && prev.ws !== ws) { try { prev.ws.terminate(); } catch {} }
-        agents.set(serverId, { ws, caps: msg.caps || [], meta: msg, lastSeen: nowMs() });
+        // SECURITY (SA2-020): the raw hello frame CARRIES THE SECRET - it
+        // used to be kept verbatim in agents.meta for the whole connection.
+        // Only the non-sensitive identity fields are retained now.
+        agents.set(serverId, {
+          ws, caps: Array.isArray(msg.caps) ? msg.caps.slice(0, 128) : [],
+          meta: { sv: msg.sv, agent: msg.agent, mc: msg.mc, caps: msg.caps },
+          lastSeen: nowMs(),
+        });
         ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'hello.ok', d: { sessionId: newId('s'), relayTs: nowMs(), protoMin: config.protoMin } }));
         // flush queued commands (§6.6) - the durable relay.db queue, so the
         // flush also delivers commands queued before a relay restart.
@@ -499,7 +657,7 @@ function setupAgentSocket(wss) {
           if (q.expiresAt > nowMs()) {
             relayDb.markSent(q.rid);
             ws.send(j(q.frame));
-            setTimeout(() => resolvePending(q.rid, 'timeout', null, 'no agent result within 120s'), 120000).unref();
+            pendingTimers.set(q.rid, setTimeout(() => resolvePending(q.rid, 'timeout', null, 'no agent result within 120s'), 120000).unref());
           } else {
             resolvePending(q.rid, 'rejected', 'E_EXPIRED', 'expired while agent offline');
           }
@@ -519,6 +677,14 @@ function setupAgentSocket(wss) {
       if (!a) return;
       a.lastSeen = nowMs();
       if (msg.t === 'evt') {
+        // SA2-020: agent acks (§6.1 step 6) re-base the 120 s watchdog on the
+        // ack instant - previously they were ignored entirely.
+        if (msg.type === 'ack' && msg.d?.rid && pendingTimers.has(msg.d.rid)) {
+          const old = pendingTimers.get(msg.d.rid);
+          if (old) clearTimeout(old);
+          pendingTimers.set(msg.d.rid, setTimeout(() => resolvePending(msg.d.rid, 'timeout', null, 'no agent result within 120s of ack'), 120000).unref());
+          return;
+        }
         // command results close the pending loop ONLY: the originator gets the
         // synthesized result, others get cmd.audit (§6.7) - never both raw.
         if (msg.type === 'cmd.result') {
@@ -561,7 +727,9 @@ function setupAgentSocket(wss) {
 
 function setupClientSocket(wss) {
   wss.on('connection', (ws, req) => {
-    const url = new URL(req.url, 'http://localhost');
+    // SA2-001: request-line parsing must never throw outside a guard.
+    const url = parseUrlOrNull(req.url);
+    if (!url) { try { ws.close(4000, 'bad request'); } catch {} return; }
     // audit P1-5: the long-lived token is no longer accepted on the socket;
     // only short-lived single-use tickets are (see /api/ws-ticket).
     if (url.searchParams.get('token')) { ws.close(4001, 'token-in-url rejected'); return; }
@@ -583,6 +751,11 @@ function setupClientSocket(wss) {
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
+      // SA2-020: protocol-version check (§3/§14) on the client socket too.
+      if (msg.sv !== config.protoMin) {
+        return ws.send(j({ sv: 1, id: msg.id || '', t: 'evt', type: 'cmd.result', ts: nowMs(),
+          d: { rid: msg.rid || msg.id || '', cmd: msg.cmd || '', status: 'rejected', code: 'E_PROTO', error: 'unsupported protocol version' } }));
+      }
       if (msg.t === 'evt' && msg.type === 'select') {
         // audit C-2: validate OWNERSHIP before subscribing. The command path
         // already checked rec.userId === client.user.id; the read path did
@@ -593,6 +766,12 @@ function setupClientSocket(wss) {
         if (!wantId || !rec || rec.userId !== client.user.id) {
           return ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'select.err', d: { code: 'E_UNKNOWN_SERVER' } }));
         }
+        // SA2-020 (§10): after a subscription ends the server stays readable
+        // for the 14-day grace window, then the feed is archived - select is
+        // refused past it (commands were already gated by store.entitled).
+        if (!store.readableAfterExpiry(wantId)) {
+          return ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'select.err', d: { code: 'E_ENTITLEMENT' } }));
+        }
         client.serverId = wantId;
         for (const ev of rings.get(client.serverId) || []) ws.send(j(ev));
         return;
@@ -600,8 +779,19 @@ function setupClientSocket(wss) {
       if (msg.t === 'evt' && msg.type === 'prepare') {
         const meta = COMMAND_META[msg.cmdTarget];
         if (!meta || meta.risk !== 'D') return ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'prepare.err', d: { code: 'E_ARGS' } }));
+        // SA2-009: a viewer cannot flood prepareTokens - per-user and global
+        // caps, oldest entries evicted first.
+        const mine = [...prepareTokens.values()].filter((t2) => t2.userId === client.user.id);
+        if (mine.length >= config.limits.maxPrepareTokensPerUser
+          || prepareTokens.size >= config.limits.maxPrepareTokensTotal) {
+          const oldest = mine.sort((a2, b2) => a2.preparedAt - b2.preparedAt)[0];
+          if (oldest) for (const [k2, v2] of prepareTokens) if (v2 === oldest) { prepareTokens.delete(k2); break; }
+          if (prepareTokens.size >= config.limits.maxPrepareTokensTotal) {
+            return ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'prepare.err', d: { code: 'E_RATE' } }));
+          }
+        }
         const token2 = newId('cf');
-        prepareTokens.set(token2, { userId: client.user.id, cmd: msg.cmdTarget, target: msg.target || '', preparedAt: nowMs(), validUntil: nowMs() + 120000 });
+        prepareTokens.set(token2, { userId: client.user.id, cmd: msg.cmdTarget, target: String(msg.target || '').slice(0, 64), preparedAt: nowMs(), validUntil: nowMs() + 120000 });
         return ws.send(j({ sv: 1, id: msg.id, t: 'evt', type: 'prepare.ok', d: { token: token2, validUntil: nowMs() + 120000, holdMs: config.destructiveHoldMs } }));
       }
       if (msg.t === 'cmd') {
@@ -631,12 +821,20 @@ function authUser(req) {
 }
 
 const httpServer = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  // SECURITY (SA2-001): absolute-form request lines made `new URL` throw
+  // BEFORE the try block - one unauthenticated packet crashed the process.
+  const url = parseUrlOrNull(req.url);
+  if (!url) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('bad request');
+  }
   applySecurityHeaders(req, res, url.pathname.startsWith('/api/'));
   try {
     if (req.method === 'POST' && url.pathname === '/api/login') {
       const { name, password } = await readBody(req);
-      const ip = req.socket.remoteAddress || '';
+      // SA2-007: with RELAY_TRUST_PROXY=true this keys on the real client
+      // (rightmost XFF appended by YOUR proxy) instead of the proxy IP.
+      const ip = clientIpOf(req);
       // audit P0-2: lockout check BEFORE scrypt so a blocked source cannot
       // pin the relay CPU on password derivations, and guessing is capped.
       if (loginLimiter.isBlocked(ip, name)) {
@@ -657,6 +855,9 @@ const httpServer = http.createServer(async (req, res) => {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         return res.end(j({ error: 'bad credentials' }));
       }
+      // SA2-017: legacy N=16384 hashes upgrade transparently after a
+      // successful login.
+      store.maybeRehash(user, password);
       loginLimiter.recordSuccess(ip, user.name);
       const sess = store.createSession(user, req.headers['user-agent']?.slice(0, 40) || 'unknown');
       store.audit({ kind: 'auth', actorName: user.name, status: 'login', dev: sess.dev });
@@ -668,6 +869,12 @@ const httpServer = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/ws-ticket') {
       const found = authUser(req);
       if (!found) { res.writeHead(401); return res.end('{}'); }
+      // SA2-009: the ticket endpoint is rate-limited per user now (it used
+      // to be the only unthrottled authenticated endpoint).
+      if (!pushRate(rateOf(found.user.id).tickets || (rateOf(found.user.id).tickets = []), config.limits.wsTicketPerMin)) {
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '10' });
+        return res.end(j({ error: 'too many ticket requests' }));
+      }
       const { ticket, expiresAt } = issueWsTicket(found.session.token, found.user.id);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(j({ ticket, expiresAt }));
@@ -686,7 +893,16 @@ const httpServer = http.createServer(async (req, res) => {
       if (!found || found.user.role !== 'owner') { res.writeHead(403); return res.end(j({ error: 'owner only' })); }
       const { serverId, secret, name } = await readBody(req);
       if (!serverId || !secret) { res.writeHead(400); return res.end(j({ error: 'serverId and secret required' })); }
-      const rec = store.pairServer({ serverId: String(serverId), secret: String(secret), name, userId: found.user.id });
+      // SA2-020: pairing material format enforced (§4.1/§11) - serverId
+      // 4..32 charset, secret exactly 64 hex. The Cloud Agent generates
+      // exactly these shapes, so this only blocks malformed/forged input.
+      const sid = String(serverId);
+      const sec = String(secret);
+      if (!SERVER_ID_RE.test(sid) || !SECRET_RE.test(sec)) {
+        res.writeHead(400);
+        return res.end(j({ error: 'serverId must match [A-Za-z0-9_-]{4,32} and secret must be 64 hex chars' }));
+      }
+      const rec = store.pairServer({ serverId: sid, secret: sec, name, userId: found.user.id });
       store.audit({ kind: 'pairing', serverId, actorName: found.user.name, status: 'paired' });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(j({ paired: true, serverId: rec.serverId, name: rec.name, entitled: store.entitled(serverId) }));
@@ -699,15 +915,15 @@ const httpServer = http.createServer(async (req, res) => {
       if (!rec || rec.userId !== found.user.id || !subscription?.endpoint) { res.writeHead(400); return res.end(j({ error: 'bad subscription' })); }
       // audit C-8: the relay POSTs alert pushes to whatever endpoint is stored
       // here - a wholesale client-controlled URL was a ready-made SSRF vector
-      // (http://169.254.169.254/... and friends). Accept only https push
-      // endpoints on real hostnames, no userinfo, default port, bounded size.
-      let ep;
-      try { ep = new URL(String(subscription.endpoint)); } catch { ep = null; }
-      const isIpLiteral = ep && (/^\d+\.\d+\.\d+\.\d+$/.test(ep.hostname) || ep.hostname.includes(':'));
-      if (!ep || ep.protocol !== 'https:' || !ep.hostname || isIpLiteral || ep.username || ep.password
-          || String(subscription.endpoint).length > 512) {
+      // (http://169.254.169.254/... and friends). SECURITY (SA2-005): the
+      // check moved into endpoint-guard.js and is now MUCH stricter - https
+      // only, default 443 port, FQDN public hostnames only (no localhost,
+      // no .internal/.local/.svc/.lan, no single-label, no IP literals,
+      // no cloud-metadata shapes) - AND the same guard re-validates at
+      // DELIVERY time (alerts.js), so a later DNS/endpoint swap is caught too.
+      if (!isSafePushEndpoint(String(subscription.endpoint))) {
         res.writeHead(400);
-        return res.end(j({ error: 'endpoint must be an https push-service URL' }));
+        return res.end(j({ error: 'endpoint must be a public https push-service URL (port 443, no internal hosts)' }));
       }
       rec.pushSubs = (rec.pushSubs || []).filter((s) => s.endpoint !== subscription.endpoint);
       if (rec.pushSubs.length >= 10) rec.pushSubs.shift();  // bound the list
@@ -740,10 +956,43 @@ const httpServer = http.createServer(async (req, res) => {
 const agentWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 const clientWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 httpServer.on('upgrade', (req, socket, head) => {
-  const { pathname } = new URL(req.url, 'http://localhost');
-  if (pathname === '/agent') agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit('connection', ws, req));
-  else if (pathname === '/app') clientWss.handleUpgrade(req, socket, head, (ws) => clientWss.emit('connection', ws, req));
-  else socket.destroy();
+  // SECURITY (SA2-001): the upgrade request line gets the same guard - a
+  // raw absolute-form upgrade used to throw here and kill the process.
+  const parsed = parseUrlOrNull(req.url);
+  if (!parsed) { socket.destroy(); return; }
+  // SECURITY (SA2-009): pre-auth connection caps. Ten thousand half-open
+  // upgrades used to be free FD/memory exhaustion; now both endpoints are
+  // bounded globally AND per source IP.
+  const ip = req.socket?.remoteAddress || 'unknown';
+  const live = socketsPerIp.get(ip) || 0;
+  const globalLive = agents.size + clients.size;
+  if (live >= config.limits.maxSocketsPerIp || globalLive >= config.limits.maxAppSockets + config.limits.maxAgentSockets) {
+    socket.destroy();
+    return;
+  }
+  const pathname = parsed.pathname;
+  const release = () => { socketsPerIp.set(ip, Math.max(0, (socketsPerIp.get(ip) || 1) - 1)); };
+  socketsPerIp.set(ip, live + 1);
+  const cap = pathname === '/agent' ? config.limits.maxAgentSockets : config.limits.maxAppSockets;
+  const countOf = pathname === '/agent' ? () => agents.size : () => clients.size;
+  if (pathname === '/agent' || pathname === '/app') {
+    if (countOf() >= cap) { release(); socket.destroy(); return; }
+  }
+  const wrappedSocketHead = head;
+  if (pathname === '/agent') {
+    agentWss.handleUpgrade(req, socket, wrappedSocketHead, (ws) => {
+      ws.once('close', release);
+      agentWss.emit('connection', ws, req);
+    });
+  } else if (pathname === '/app') {
+    clientWss.handleUpgrade(req, socket, wrappedSocketHead, (ws) => {
+      ws.once('close', release);
+      clientWss.emit('connection', ws, req);
+    });
+  } else {
+    release();
+    socket.destroy();
+  }
 });
 setupAgentSocket(agentWss);
 setupClientSocket(clientWss);

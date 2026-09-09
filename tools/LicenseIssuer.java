@@ -58,7 +58,12 @@ public class LicenseIssuer {
         System.err.println("Usage:");
         System.err.println("  java tools/LicenseIssuer.java generate");
         System.err.println("  java tools/LicenseIssuer.java fingerprint <server-game-dir>");
-        System.err.println("  java tools/LicenseIssuer.java issue <privateKeyB64> <licensee> <expiry ISO-8601> <fingerprint|ANY>");
+        System.err.println("  java tools/LicenseIssuer.java issue <privateKeyFile> <licensee> <expiry ISO-8601> <fingerprint|ANY>");
+        System.err.println();
+        System.err.println("SECURITY (SA2-025, CWE-214): the FIRST argument of 'issue' is a PATH to a file");
+        System.err.println("containing the base64 private key (or set SOLIDUS_ISSUER_KEY and pass '-').");
+        System.err.println("A raw private key used to be accepted directly on the command line, which");
+        System.err.println("leaked it into shell history, 'ps'/'/proc' and terminal scrollback.");
         System.exit(2);
     }
 
@@ -67,14 +72,51 @@ public class LicenseIssuer {
         KeyPair pair = generator.generateKeyPair();
         String publicKey = Base64.getEncoder().encodeToString(pair.getPublic().getEncoded());
         String privateKey = Base64.getEncoder().encodeToString(pair.getPrivate().getEncoded());
-        System.out.println("# PUBLIC key - ships to customer servers via SOLIDUS_LICENSE_PUBLIC_KEY:");
+        // SECURITY (SA2-025): the private key used to be printed to stdout -
+        // terminal scrollback, CI logs and shell history are poor places for
+        // a signing root. It now lands in a 0600 file; only the public key
+        // is printed.
+        java.nio.file.Path privFile = java.nio.file.Path.of("solidus-license-private-key.b64");
+        java.nio.file.Path pubFile = java.nio.file.Path.of("solidus-license-public-key.b64");
+        java.nio.file.Files.writeString(privFile, privateKey);
+        try {
+            java.util.Set<java.nio.file.attribute.PosixFilePermission> perms =
+                java.util.EnumSet.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                                     java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
+            java.nio.file.Files.setPosixFilePermissions(privFile, perms);
+        } catch (UnsupportedOperationException | java.io.IOException ignored) {
+            // non-POSIX filesystem
+        }
+        java.nio.file.Files.writeString(pubFile, publicKey);
+        System.out.println("# PUBLIC key - ships to customer servers (also written to " + pubFile + "):");
         System.out.println(publicKey);
         System.out.println();
-        System.out.println("# PRIVATE key - KEEP OFFLINE, never share, never put on a server:");
-        System.out.println(privateKey);
+        System.out.println("# PRIVATE key - KEEP OFFLINE, never share, never put on a server.");
+        System.out.println("# Written to " + privFile + " (chmod 600) instead of stdout.");
     }
 
-    private static void issue(String privateKeyB64, String licensee, String expiryIso, String fingerprint) throws Exception {
+    private static void issue(String privateKeyRef, String licensee, String expiryIso, String fingerprint) throws Exception {
+        // SECURITY (SA2-025, CWE-214): the raw private key is no longer
+        // accepted as a command-line ARGUMENT (it leaked into shell history,
+        // 'ps'/'/proc' and terminal scrollback). Pass a PATH to a file that
+        // contains the base64 key - or '-' with the key in SOLIDUS_ISSUER_KEY.
+        String privateKeyB64;
+        if ("-".equals(privateKeyRef)) {
+            privateKeyB64 = System.getenv("SOLIDUS_ISSUER_KEY");
+            if (privateKeyB64 == null || privateKeyB64.isBlank()) {
+                System.err.println("ERROR: SOLIDUS_ISSUER_KEY is not set (required when the key argument is '-')");
+                System.exit(2);
+                return;
+            }
+        } else {
+            java.nio.file.Path keyFile = java.nio.file.Path.of(privateKeyRef);
+            if (!java.nio.file.Files.exists(keyFile)) {
+                System.err.println("ERROR: " + privateKeyRef + " does not exist - pass a PATH to a file holding the base64 private key (or '-' with SOLIDUS_ISSUER_KEY)");
+                System.exit(2);
+                return;
+            }
+            privateKeyB64 = java.nio.file.Files.readString(keyFile);
+        }
         byte[] privateKeyBytes;
         try {
             privateKeyBytes = Base64.getDecoder().decode(privateKeyB64.trim());

@@ -142,7 +142,7 @@ nonce uniqueness.
   Mitigate in depth with ProGuard obfuscation, multiple deferred license
   checks, and by distributing **updates only through a license-gated
   channel** — updates are the real product for an actively developed mod.
-* Clock rollback on the customer server can extend a dated license.
+* Clock rollback on the customer server can extend a dated license. **Update (2.1.5, SA2-011):** the verifier now keeps a monotonic high-water-mark anchor (`config/solidus-analytics/license-clock`, 0600) — expiry checks run against max(today, anchor), so a clock ROLLBACK no longer extends a dated license. Restoring a full VM snapshot to before the anchor remains the documented residual risk; the online re-verification path stays a roadmap item.
 * Fingerprint spoofing — fingerprinting is an anti-sharing convenience, the
   signature is the actual security boundary.
 

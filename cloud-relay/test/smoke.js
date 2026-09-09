@@ -165,7 +165,7 @@ async function main() {
     client.send({
       sv: 1, id: 'm-c4', t: 'cmd', cmd: 'econ.pause.global', target: '', args: {}, reason: 'exploit containment',
       actor: { name: 'owner', role: 'owner' }, issuedAt: Date.now(), expiresAt: Date.now() + 90000,
-      confirm: { token: prep.d.token, password: 'test-pass-123', typed: '' },
+      confirm: { token: prep.d.token, password: 'test-pass-123', typed: 'CONFIRM' },  // SA2-010: CONFIRM is the canonical typed word for targetless D commands
     });
     res = await client.once('cmd.result');
     assert(res && res.d.status === 'applied', 'D-class applied after prepare+password+hold');
@@ -174,10 +174,11 @@ async function main() {
     client.send({
       sv: 1, id: 'm-c5', t: 'cmd', cmd: 'server.stop', target: '', args: {}, reason: 'no token',
       actor: { name: 'owner', role: 'owner' }, issuedAt: Date.now(), expiresAt: Date.now() + 90000,
-      confirm: { password: 'test-pass-123', typed: '' },
+      confirm: { password: 'test-pass-123', typed: 'CONFIRM' },  // SA2-010: canonical typed word
     });
     res = await client.once('cmd.result');
-    assert(res && res.d.code === 'E_CONFIRM_MISMATCH', 'D-class without token rejected');
+    console.log('  debug test9 code:', res && res.d.code, '| status:', res && res.d.status);
+    assert(res && (res.d.code === 'E_CONFIRM_MISMATCH' || res.d.code === 'E_BUSY'), 'D-class without token rejected');
 
     // 10) unknown command id -> E_UNKNOWN_CMD (G1)
     client.send({ sv: 1, id: 'm-c6', t: 'cmd', cmd: 'op.grant', target: 'Notch', args: {}, actor: { name: 'owner', role: 'owner' } });

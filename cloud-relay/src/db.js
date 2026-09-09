@@ -66,7 +66,12 @@ class RelayDb {
   constructor(dbPath) {
     this.dbPath = dbPath;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const existed = fs.existsSync(dbPath);
     this.db = new DatabaseSync(dbPath);
+    // SECURITY (SA2-018): the SQLite store carries queued command frames and
+    // idempotency data - it gets 0600 too (best-effort on platforms without
+    // POSIX perms).
+    if (!existed) { try { fs.chmodSync(dbPath, 0o600); } catch {} }
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA synchronous = NORMAL');
     this.db.exec('PRAGMA foreign_keys = OFF');

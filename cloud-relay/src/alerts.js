@@ -4,6 +4,7 @@
 
 const crypto = require('node:crypto');
 const { config } = require('./config');
+const { isSafePushEndpoint } = require('./endpoint-guard');
 
 let webpush = null;
 try { webpush = require('web-push'); } catch { /* optional */ }
@@ -81,10 +82,13 @@ class AlertEngine {
 
   fire(serverId, rule, st, reason) {
     const now = Date.now();
-    // audit C-11: the global maintenance window set by alert.silence was
-    // written to the store but never read - the command was a no-op that the
-    // UI happily reported as applied (§13: suppression, not deletion).
-    const silencedUntil = this.store.alerts.silenceUntil || 0;
+    // audit C-11: the maintenance window set by alert.silence. SECURITY
+    // (SA2-006): silence is PER-SERVER now (store.alerts.silence[serverId]);
+    // the legacy global silenceUntil is still honored for rows written by
+    // relay versions before the fix.
+    const silencedUntil = Math.max(
+      (this.store.alerts.silence && this.store.alerts.silence[serverId]) || 0,
+      this.store.alerts.silenceUntil || 0);
     if (silencedUntil > now) return;
     if (st.firedAt && now - st.firedAt < (rule.silenceMin || 0) * 60000) return;
     st.firedAt = now;
@@ -96,6 +100,17 @@ class AlertEngine {
     }
     const rec = this.store.findServer(serverId);
     for (const sub of (rec && rec.pushSubs) || []) {
+      // SECURITY (SA2-005): re-validate at DELIVERY time. The subscribe-time
+      // guard can be defeated later by DNS rebinding (a public hostname that
+      // starts resolving to 169.254.169.254) or by any path that touches the
+      // stored record. A failed check drops the subscription and audits it.
+      if (!isSafePushEndpoint(sub.endpoint)) {
+        console.error(`[alert] ${serverId}: dropping unsafe push endpoint (SSRF guard)`);
+        this.store.audit({ kind: 'alert', serverId, status: 'dropped', code: 'E_ENDPOINT_UNSAFE' });
+        rec.pushSubs = rec.pushSubs.filter((x) => x !== sub);
+        this.store.saveServers();
+        continue;
+      }
       webpush.sendNotification(sub, JSON.stringify(payload)).catch((err) => {
         if (err && (err.statusCode === 404 || err.statusCode === 410)) {
           rec.pushSubs = rec.pushSubs.filter((x) => x !== sub);

@@ -10,7 +10,20 @@ const fmtC = (c) => c == null ? '—' : (c / 100).toLocaleString('en-US', { maxi
 const fmtMB = (b) => b == null || b < 0 ? '—' : b + ' MB';
 const fmtDur = (s) => s == null ? '—' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
 
-let TOKEN = localStorage.getItem('sc_token') || null;
+// SECURITY (SA2-021): the session token lives in sessionStorage by default
+// (dies with the tab - no 30-day token for a drive-by script to read). Only
+// when the operator checks "remember on this device" does it persist into
+// localStorage for the full TTL.
+const TOKEN_KEY = 'sc_token';
+let TOKEN = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || null;
+function persistToken(t, remember) {
+  if (remember) localStorage.setItem(TOKEN_KEY, t);
+  else sessionStorage.setItem(TOKEN_KEY, t);
+}
+function forgetToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_KEY);
+}
 let WS = null;
 let MY = { user: null, role: 'viewer', servers: [] };
 let currentServer = null;
@@ -41,26 +54,27 @@ const COMMANDS = [
 ];
 
 // ---------- login ----------
-async function login(name, pass) {
+async function login(name, pass, remember) {
   const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, password: pass }) });
   if (!r.ok) throw new Error('bad credentials');
   const d = await r.json();
   TOKEN = d.token;
-  localStorage.setItem('sc_token', TOKEN);
+  persistToken(TOKEN, remember);
   startApp();
 }
 
 $('login-form').addEventListener('submit', (e) => {
   e.preventDefault();
   $('login-error').classList.add('hidden');
-  login($('login-name').value.trim(), $('login-pass').value).catch((err) => {
+  const remember = $('login-remember')?.checked || false;
+  login($('login-name').value.trim(), $('login-pass').value, remember).catch((err) => {
     $('login-error').textContent = 'Sign-in failed: ' + err.message;
     $('login-error').classList.remove('hidden');
   });
 });
 
 $('logout').addEventListener('click', () => {
-  localStorage.removeItem('sc_token');
+  forgetToken();
   location.reload();
 });
 
@@ -76,7 +90,7 @@ $('pair-btn').addEventListener('click', async () => {
 // ---------- app boot ----------
 async function startApp() {
   const r = await fetch('/api/state', { headers: { Authorization: 'Bearer ' + TOKEN } });
-  if (!r.ok) { localStorage.removeItem('sc_token'); location.reload(); return; }
+  if (!r.ok) { forgetToken(); location.reload(); return; }
   const st = await r.json();
   MY = st;
   $('login').classList.add('hidden');
@@ -100,7 +114,7 @@ async function connectWs() {
   let ticket;
   try {
     const r = await fetch('/api/ws-ticket', { method: 'POST', headers: { Authorization: 'Bearer ' + TOKEN } });
-    if (!r.ok) { localStorage.removeItem('sc_token'); location.reload(); return; }
+    if (!r.ok) { forgetToken(); location.reload(); return; }
     ticket = (await r.json()).ticket;
   } catch {
     $('conn-badge').textContent = 'offline';
@@ -303,20 +317,13 @@ function modalPrepareOk(d) {
       btn.textContent = `hold ${left}s`;
     }
   }, 1000);
-  // stash frame; the next Execute click will attach the token
-  const orig = $('modal-send').onclick;
-  $('modal-send').onclick = null;
-  const send = () => {
-    if (!modal.token) return;
-    const frame = modal.pendingFrame;
-    frame.confirm.token = modal.token;
-    frame.confirm.password = $('mf-password') ? $('mf-password').value : '';
-    $('modal-status').textContent = 'executing…';
-    WS.send(JSON.stringify(frame));
-  };
-  $('modal-send').addEventListener('click', function once() {
-    if (modal.token) { send(); $('modal-send').removeEventListener('click', once); }
-  });
+  // stash frame; the main Execute handler (registered once at the top)
+  // re-runs on the next click, sees modal.token set, and attaches it.
+  // SECURITY (SA2-010, side note): the old code ALSO stacked a second
+  // one-shot click listener on top of the original one, so the frame was
+  // genuinely sent TWICE per click - benign only because tokens are
+  // single-use. The redundant listener is gone; there is exactly one
+  // dispatch path now.
 }
 
 function cmdResult(d) {
@@ -349,7 +356,15 @@ function auditRow(d, prepend) {
   const row = document.createElement('div');
   row.className = 'row';
   const t = new Date(d.ts || Date.now()).toLocaleTimeString();
-  row.innerHTML = `<span class="t">${t}</span><span class="${d.status || ''}">${d.status || ''}</span><span>${esc(d.cmd || d.kind || '')}</span><span>${esc(d.target || '')}</span><span class="muted">${esc(d.actorName || d.actor?.name || '')}</span><span class="muted">${esc(d.code || d.error || '')}</span>`;
+  // SECURITY (SA2-002, CWE-79): d.status is AGENT-SOURCED (it comes back in
+  // cmd.result frames and is persisted in the ring) - it used to be the ONLY
+  // field interpolated raw into innerHTML, twice (class attribute + text).
+  // The class is now restricted to a known-value whitelist and the text is
+  // escaped like every other field.
+  const ALLOWED_STATUS = ['applied', 'rejected', 'timeout', 'queued', 'sent', 'spike', 'ok', 'denied', 'error', 'offline', 'online'];
+  const rawStatus = String(d.status || '');
+  const statusClass = ALLOWED_STATUS.includes(rawStatus) ? rawStatus : '';
+  row.innerHTML = `<span class="t">${t}</span><span class="${statusClass}">${esc(rawStatus)}</span><span>${esc(d.cmd || d.kind || '')}</span><span>${esc(d.target || '')}</span><span class="muted">${esc(d.actorName || d.actor?.name || '')}</span><span class="muted">${esc(d.code || d.error || '')}</span>`;
   if (prepend) feed.prepend(row); else feed.appendChild(row);
   while (feed.children.length > 120) feed.removeChild(feed.lastChild);
 }

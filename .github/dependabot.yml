@@ -8,3 +8,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # SA2-023: the cloud relay (801 lines of Node on the public internet) and
+  # its PWA were entirely outside the dependency-SAST umbrella - a future CVE
+  # in ws/web-push shipped silently. npm now gets weekly PRs too.
+  - package-ecosystem: "npm"
+    directory: "/cloud-relay"
+    schedule:
+      interval: "weekly"

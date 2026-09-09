@@ -266,7 +266,7 @@ PWA                relay                       agent
 ```
 
 1. Client submits the command frame (§3) to the relay.
-2. Relay validates: schema (`args`), role (`minRole`), entitlement, rate ceiling (§9),
+2. Relay validates: schema (`args` — enforced since the SA2 round: unknown keys, closed enums, bounded integers and length-capped strings are checked in `cloud-relay/src/args-schema.js`, which covers the full §15 catalog; the agent re-validates everything again), role (`minRole`), entitlement, rate ceiling (§9),
    confirmation proof (§7), idempotency cache (10 min), TTL (`expiresAt`).
    Invalid → immediate `result{status:"rejected", code:…}`; **never forwarded**.
 3. If the agent is offline: the command is queued (§6.6), status `queued`, and the client
@@ -325,6 +325,9 @@ Exactly the six catalog paths — the agent's `CommandSpec` registry binds each 
 | `E_ENTITLEMENT` | subscription inactive — command channel closed | relay |
 | `E_ROLE` | role below `minRole` for this command | relay |
 | `E_ARGS` | schema/type/range violation | relay + agent |
+| `E_PROTO` | frame `sv` targets a different protocol major version | relay (both sockets) |
+| `E_BUSY` | another D-class command is in flight for this server (§9 "1 concurrent pending") | relay |
+| `E_IDEM_INFLIGHT` | duplicate `idemKey` while the first execution has not resolved yet (§8) | relay |
 | `E_CONFIRM_MISSING` | confirmation proof absent for W2/D | relay |
 | `E_CONFIRM_MISMATCH` | typed name ≠ target, or wrong/expired token | relay |
 | `E_HOLD` | destructive command submitted before hold elapsed | relay |
@@ -369,6 +372,7 @@ Risk classes are the catalog's R / W1 / W2 / D. The relay enforces; the agent re
 | R | none | — |
 | W1 | single tap, preview panel | none |
 | W2 | modal shows target + effect + current & projected values (balance preview for money) | `confirm.typed` must equal `target` exactly; `reason` non-empty |
+| targetless W2/D (`econ.pause.global`, `server.restart`, …) | modal shows effect, no name to type | `confirm.typed` must be the canonical word `CONFIRM` (SA2 round: the relay compared against the empty target and rejected every targetless D command from the official UI) |
 | D | modal + password re-entry + 30 s hold with countdown | `prepare` → relay issues `confirmToken` (bound to user+cmd+target hash, 120 s validity) → submit carries `confirm.{token, password}`; relay enforces `now ≥ preparedAt + hold` |
 
 - The relay verifies the password (argon2id/bcrypt hash, same as login) — **not** a

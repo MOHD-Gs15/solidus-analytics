@@ -326,10 +326,14 @@ public final class SolidusLicenseTool {
         }
 
         String payload = new String(payloadBytes, StandardCharsets.UTF_8);
-        String[] fields = payload.split("\\|", 6);
+        // SA2-030: split with limit -1 like the MOD does, and reject any
+        // field-count drift explicitly. The old limit-6 split FOLDED a 7th
+        // field into the nonce silently, so a crafted key could be "VALID"
+        // here and rejected at the customer's server.
+        String[] fields = payload.split("\\|", -1);
         if (fields.length != 6) {
             return new VerifyOutcome(VerifyOutcome.Status.INVALID,
-                    "Invalid payload structure (expected 6 fields, got " + fields.length + ")",
+                    "Invalid payload structure (expected exactly 6 fields, got " + fields.length + ")",
                     null, null, null, null, null);
         }
         int version;
@@ -350,6 +354,29 @@ public final class SolidusLicenseTool {
         String fingerprint = fields[3];
         String product = fields[4];
         String nonce = fields[5];
+
+        // SA2-030: the following three checks mirror LicenseVerifier EXACTLY
+        // (they used to be mod-only, producing "VALID at the vendor, rejected
+        // at the customer" support tickets):
+        if (customer.isBlank()) {
+            return new VerifyOutcome(VerifyOutcome.Status.INVALID, "Customer field is empty",
+                    customer, expiry, fingerprint, product, nonce);
+        }
+        if (!"ANY".equals(fingerprint) && !fingerprint.matches("[0-9A-Fa-f]{16}")) {
+            return new VerifyOutcome(VerifyOutcome.Status.INVALID,
+                    "Invalid fingerprint field (expected 16 hex chars or ANY)",
+                    customer, expiry, fingerprint, product, nonce);
+        }
+        if (!"analytics-premium".equals(product)) {
+            return new VerifyOutcome(VerifyOutcome.Status.INVALID,
+                    "License is for product '" + product + "' - this verifier only accepts 'analytics-premium'",
+                    customer, expiry, fingerprint, product, nonce);
+        }
+        if (!nonce.matches("[0-9A-Fa-f]{16}")) {
+            return new VerifyOutcome(VerifyOutcome.Status.INVALID,
+                    "Invalid nonce (expected exactly 16 hex chars)",
+                    customer, expiry, fingerprint, product, nonce);
+        }
 
         if (!PERPETUAL.equals(expiry)) {
             LocalDate expiryDate;

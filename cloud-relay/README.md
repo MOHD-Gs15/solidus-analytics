@@ -102,7 +102,8 @@ The agent logs `serverId` + `pairingSecret` on first boot.
 | var | default | meaning |
 |-----|---------|---------|
 | `RELAY_PORT` | 8787 | listen port |
-| `RELAY_HOST` | 0.0.0.0 | bind host |
+| `RELAY_HOST` | 127.0.0.1 | bind host (SA2 round: loopback by default - set `0.0.0.0` explicitly only behind your TLS proxy) |
+| `RELAY_TRUST_PROXY` | unset | set `true` ONLY behind your own reverse proxy: the login limiter then keys on the rightmost X-Forwarded-For hop instead of the proxy IP (SA2-007: otherwise one anonymous visitor could lock out the shared proxy address) |
 | `RELAY_DATA_DIR` | `./data` | users/servers/alerts/audit storage |
 | `RELAY_DB_PATH` | `$RELAY_DATA_DIR/relay.db` | SQLite durable store (rings/queue/idem) |
 | `RELAY_ALLOW_INSECURE` | false | permit plain `ws://` (dev only) |

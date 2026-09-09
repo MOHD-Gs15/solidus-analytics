@@ -26,10 +26,10 @@ switch (cmd) {
     const ROLES = ['viewer', 'mod', 'admin', 'owner'];
     const role = args.role || (store.users.users.length === 0 ? 'owner' : 'viewer');
     if (!ROLES.includes(role)) fail(`invalid --role "${role}" (allowed: ${ROLES.join(', ')})`);
-    const { salt, hash } = store.hashPassword(args.password);
+    const { salt, hash, scryptN } = store.hashPassword(args.password);
     store.users.users.push({
       id: 'u-' + crypto.randomUUID().slice(0, 8),
-      name: args.name, salt, hash,
+      name: args.name, salt, hash, scryptN,
       role,
       created: Date.now(),
     });
@@ -41,6 +41,12 @@ switch (cmd) {
     const user = store.findUser(args.user || '');
     if (!user) fail('unknown --user (create it first with npm run user)');
     if (!args.serverId || !args.secret) fail('usage: npm run pair -- --user <owner> --serverId <id> --secret <64hex> [--name "My Server"]');
+    // SA2-020: enforce the §4.1/§11 pairing material format at the CLI too
+    // (same rules the /api/pair endpoint and the agent hello enforce).
+    const SID_RE = /^[A-Za-z0-9_\-]{4,32}$/;
+    const SECRET_RE = /^[0-9a-f]{64}$/;
+    if (!SID_RE.test(String(args.serverId))) fail('serverId must match [A-Za-z0-9_-]{4,32}');
+    if (!SECRET_RE.test(String(args.secret))) fail('secret must be exactly 64 hex chars (openssl rand -hex 32)');
     const rec = store.pairServer({
       serverId: args.serverId, secret: args.secret, name: args.name, userId: user.id,
     });
