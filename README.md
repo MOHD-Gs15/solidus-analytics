@@ -1,367 +1,113 @@
-# Solidus Analytics — Server-Side Minecraft Fabric Mod
+<h1 align="center">Solidus Analytics</h1>
 
-[![Solidus Family](https://img.shields.io/badge/Solidus_Family-2.1.5-8B5CF6.svg)](VERSIONING.md)
-[![Platform](https://img.shields.io/badge/Platform-Fabric-blue.svg)](https://fabricmc.net/)
-[![Minecraft](https://img.shields.io/badge/Minecraft-26.1.x-green.svg)](https://www.minecraft.net/)
-[![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://adoptium.net/)
-[![Server-Side](https://img.shields.io/badge/Server_Side-Only-brightgreen.svg)](https://fabricmc.net/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Type](https://img.shields.io/badge/Type-Economy_Intelligence-8B5CF6.svg)]()
+<p align="center"><strong>See exactly where every coin on your Minecraft server goes</strong><br>
+Live economy monitoring, a password-protected web dashboard, and automatic fraud detection for the Solidus ecosystem.</p>
 
-**Economy intelligence layer for Solidus Core — wealth snapshots, inflation tracking, inequality metrics, health scoring, fraud detection, and a live web dashboard. No client mods required.**
+<p align="center">
+  <a href="https://github.com/MOHD-Gs15/solidus-analytics/actions/workflows/test.yml"><img src="https://github.com/MOHD-Gs15/solidus-analytics/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/MOHD-Gs15/solidus-analytics/actions/workflows/codeql.yml"><img src="https://github.com/MOHD-Gs15/solidus-analytics/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <img src="https://img.shields.io/badge/version-2.1.5-blue" alt="Version 2.1.5">
+  <img src="https://img.shields.io/badge/Minecraft-26.1.2-brightgreen" alt="Minecraft 26.1.2">
+  <img src="https://img.shields.io/badge/Java-25-orange" alt="Java 25">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+  <a href="https://github.com/MOHD-Gs15"><img src="https://img.shields.io/badge/mod%20by-MOHD--Gs-6f42c1" alt="Mod by MOHD-Gs"></a>
+</p>
 
-Real-time economic telemetry · AES-256-GCM encrypted publishing · Zero client installation · Minecraft 26.1.x Ready
+**Solidus Analytics** is a server-side Fabric mod for Minecraft 26.1.2 that watches every financial transaction on a server running the [Solidus](https://github.com/MOHD-Gs15/solidus-core) economy mod and turns it into clear, live insight: who is getting rich, which items actually trade, whether prices are inflating, and — with the premium features — whether anyone is cheating the economy. It renders its web dashboard as lightweight SVG gauges straight from a built-in web server, with **no external database and no third-party service**: everything runs inside your server and stays yours. Free and open source under the MIT license.
 
-[Features](#-features) · [Dashboard](#-live-web-dashboard) · [Premium](#-premium-features) · [Quick Start](#-quick-start) · [Configuration](#-configuration) · [Architecture](#-architecture) · [FAQ](#-faq)
+## Why server owners pick Solidus Analytics
 
----
-
-<!-- Schema.org Structured Data for Search Engines
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "Solidus Analytics",
-  "applicationCategory": "GameModification",
-  "operatingSystem": "Minecraft 26.1.x",
-  "programmingLanguage": "Java 25",
-  "runtimePlatform": "Fabric Loader 0.19.4+",
-  "license": "MIT",
-  "description": "Server-side economy intelligence layer for Solidus Core: wealth snapshots, inflation tracking, Gini inequality, health scoring, fraud detection, and a live web dashboard. No client mods required.",
-  "author": { "@type": "Person", "name": "MOHD-Gs15", "url": "https://github.com/MOHD-Gs15" },
-  "url": "https://github.com/MOHD-Gs15/solidus-analytics",
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
-}
--->
-
-## Why Solidus Analytics?
-
-Solidus Core records every transaction your economy produces — but raw transaction rows don't tell you whether your economy is *healthy*. Solidus Analytics turns that transaction stream into decisions: periodic wealth snapshots with Gini inequality, live daily counters, inflation indicators, a 0–100 economy health score, and fraud signals that flag suspicious wealth accumulation before it ruins your server's balance.
-
-Analytics is a **read-only observer**. It never writes to Core's economy databases — it polls them through SQLite read-only connections, aggregates everything into its own WAL-journaled database, and exposes the results through in-game commands, a localhost web dashboard, and optional encrypted publishing. All processing runs on background workers; the server tick thread never blocks.
-
-### Highlights
-
-* **Fully server-side architecture** — works with any vanilla client; the dashboard runs in any browser
-* **Economy snapshots** — total wealth, Gini coefficient, top-1% share, median balance, auction value
-* **Live metrics** — id-cursor polling of the transaction log with exact exactly-once volume accounting
-* **Inflation tracking** — money supply vs. goods value ratio with 24h/7d/30d inflation rates
-* **Economy Health Score** *(premium)* — weighted 0–100 score across five economic factors
-* **Fraud detection** *(premium)* — rapid wealth gain, high-frequency trading, unusual transaction size
-* **Live web dashboard** — embedded NanoHTTPD server, localhost-bound, PBKDF2 Basic auth
-* **Encrypted publishing** *(premium)* — AES-256-GCM dashboard snapshots pushed to GitHub Pages
-* **Weekly reports + Discord notifications** *(premium)* — ISO-week reports, webhook allowlist enforced
-* **Graceful degradation** — Core is optional; without it, features report unavailable instead of failing
-
----
-
-## Solidus Ecosystem
-
-Solidus Analytics is the intelligence layer of the **Solidus Economy Ecosystem** — a suite of server-side Fabric mods that work together to create a complete, balanced economy for Minecraft servers.
-
-| Module | License | Description |
-|--------|---------|-------------|
-| [solidus-core](https://github.com/MOHD-Gs15/solidus-core) | MIT | Economy engine, server shop, auction house |
-| **solidus-analytics** | MIT | **Economy intelligence dashboard, inflation tracking, fraud detection** (this repo) |
-| [Solidus-Enforcer](https://github.com/MOHD-Gs15/Solidus-Enforcer) | MIT | Bounty hunting, hunter license system, alliance rewards, autonomous anti-monopoly bounties |
-| [Solidus-Governance](https://github.com/MOHD-Gs15/Solidus-Governance) | Proprietary | Economy administration, progressive taxation, immutable audit logging, point-in-time rollback recovery |
-| [solidus-territory](https://github.com/MOHD-Gs15/solidus-territory) | MIT | Polygon-based land claiming, rent system, territory trading, visual particle borders |
-
-Analytics integrates with Solidus Core through a **reflection-based bridge** and read-only SQLite access — zero compile dependency, automatic activation when Core is present, graceful degradation when absent.
-
-> **Repository status**: this codebase is a verified reconstruction of the recovered `solidus-analytics` artifact (originally decompiled from a JAR). Every subsystem is being rebuilt, tested, and documented rather than treated as authoritative source. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for what is verified today.
-
----
+- **Answers the question every owner asks** — where is the money going, and is the economy healthy?
+- **Zero external dependencies** — no cloud account, no analytics SaaS; the data never leaves your machine unless you choose to publish it.
+- **Live from second one** — collection starts automatically after installation, with no configuration.
+- **Built for Solidus** — reads the economy through Solidus Core's own connection (SQLite or MySQL), not by poking files behind its back.
 
 ## Features
 
-### Economy Snapshots
-
-Periodic point-in-time pictures of the entire economy, stored in Analytics' own database and used as the baseline for inflation rates and weekly reports. Snapshots require at least one known player balance — on a fresh install they are skipped rather than recorded as zeros.
-
-* Total wealth, player count, average and median balance (computed in cents)
-* Gini coefficient of wealth inequality (optimized algorithm above 1,000 players)
-* Top-1% wealth share
-* Active auction listings and their total market value
-* `HOURLY` snapshots on a configurable interval, plus one `DAILY` snapshot per UTC day
-
-### Live Metrics
-
-A polling tracker reads Solidus Core's `transaction_log` incrementally and maintains today's counters in memory:
-
-* Daily transaction count and daily volume — each money movement counted exactly once
-* Per-type breakdown (`SHOP_BUY`, `SHOP_SELL`, `PAY_SEND`, `AUCTION_*`, ...)
-* Top bought/sold items by quantity
-* Active player count
-* UTC-midnight rollover: yesterday's counters are persisted as daily metrics, then reset
-
-### Inflation Tracking
-
-Compares money supply (sum of all player balances) against goods value (active auction listings + 24h shop throughput) and classifies the ratio, with snapshot-based inflation rates over 24h, 7d, and 30d windows. Results are cached for five minutes.
-
-### Live Web Dashboard
-
-An embedded HTTP server (NanoHTTPD) serving a single-page dashboard and a JSON API. Built for local administration:
-
-* Bound to `127.0.0.1` — never exposed to the network directly
-* HTTP Basic authentication against a PBKDF2-SHA-256 password hash (210,000 iterations)
-* Hardened response headers (`X-Frame-Options`, `nosniff`, `no-store`, `no-referrer`)
-* Auto-refreshing browser view every 30 seconds
-* **Daily trade volume chart** — dependency-free SVG line chart of the last 30 days from `dailyHistory`, with grid lines, compact axis labels (1.2k / 1.2M), and native hover tooltips per day
-* Disabled by default — and refuses to start without a configured password hash
-
-### Premium Features
-
-Premium features unlock automatically when a valid license key is present:
-
-* **Economy Health Score** — weighted composite: Gini 25%, inflation 25%, money growth 20%, activity 15%, liquidity 15%
-* **Fraud detection** — three detectors with severity classification and alert history
-* **Weekly reports** — ISO-week markdown reports written under `config/solidus-analytics/reports/`
-* **Discord notifications** — fraud alerts, inflation warnings, daily summaries, health-score alerts
-* **Encrypted GitHub publishing** — AES-256-GCM encrypted dashboard payloads for GitHub Pages
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full premium subsystem reference.
-
-### Graceful Degradation
-
-Solidus Analytics never requires Solidus Core to boot. The integration bridge resolves Core through reflection at startup; if Core is absent, the engine runs in standalone mode and every Core-dependent feature reports an unavailable state — in commands, on the dashboard, and in logs — instead of crashing or fabricating zeros.
-
----
-
-## Quick Start
-
-### Installation
-
-> **Requirements:** Minecraft 26.1.x · Java 25 · Fabric Loader 0.19.4+ · Fabric API 0.155.2+ · Solidus Core (recommended)
-
-1. Install [Fabric Loader](https://fabricmc.net/use/) on your server
-2. Install [Fabric API](https://modrinth.com/mod/fabric-api) on the server
-3. Install [Solidus Core](https://github.com/MOHD-Gs15/solidus-core/releases) — Analytics reads its databases
-4. Download the latest Solidus Analytics release from [Releases](https://github.com/MOHD-Gs15/solidus-analytics/releases)
-5. Place the `.jar` file into your server's `mods/` folder
-6. Start the server — configuration is generated at `config/solidus-analytics/analytics.properties`
-
-**For premium features:** place your license key in `config/solidus-analytics/license.key` (single line) before starting the server.
-
-**No client installation required.** The dashboard is viewed in any browser on the machine (or proxy host) running the server.
-
-### First-Time Setup
-
-```
-/analytics                                ← Overview: snapshots, live metrics, dashboard status
-/analytics wealth                         ← Total wealth and player count
-/analytics inflation                      ← Current inflation indicators (24h window)
-/analytics history 7                      ← Last 7 days of daily metrics
-/analytics snapshot                       ← Force a snapshot now (admin)
-```
-
-### Enabling the Dashboard
-
-The web server is **off by default**. To turn it on safely:
-
-1. Set a password — prefer the one-shot file path (SA2-013: chat commands are logged verbatim by vanilla): `/analytics dashboard setupfile <path>` (the file is deleted after the first read), or `/analytics dashboard setup <password>` if log exposure is acceptable to you
-2. Edit `config/solidus-analytics/dashboard.properties`: `webserver.enabled=true`
-3. Restart the server and open `http://127.0.0.1:9090`
-4. To expose it beyond localhost, use an HTTPS reverse proxy — never port-forward the raw server
-
----
+- **Live monitoring** — transaction volume, operation counts, and the economy's pulse, refreshed every few seconds.
+- **In-game instant metrics** — wealth distribution, most-traded items, top buyers and sellers, and inflation rates (day/week/month) directly from commands.
+- **Password-protected web dashboard** — a numeric dashboard with charts served by a built-in web server; disabled by default and bound to localhost for safety.
+- **Publish-to-GitHub hosting** — link a repository and the dashboard data file is pushed there automatically, giving you free hosting for the dashboard without opening a single port.
+- **Historical snapshots & export** — periodically capture the economy's state and export data for external analysis.
+- **Fraud detection** *(premium license)* — three automatic detectors: unexplained rapid wealth gain, circular trading between linked accounts, and zero-value transfers.
+- **Economy health score** *(premium license)* — a 0–100 score combining five weighted factors: wealth inequality (Gini), inflation, money-supply growth, activity, and market liquidity.
+- **Weekly reports & Discord notifications** *(premium license)* — a recurring digest delivered straight to your Discord channel.
+- **Optional cloud layer** — a built-in, security-first relay service for watching a whole server network, with a mobile-friendly PWA, instant notifications, and per-server alert rules.
 
 ## Commands
 
-| Command | Access | Description |
-| --- | --- | --- |
-| `/analytics` | GameMaster | Overview: latest snapshot, live metrics, dashboard state |
-| `/analytics wealth` | GameMaster | Total wealth and player count |
-| `/analytics inflation` | GameMaster | Inflation indicators (24h) |
-| `/analytics top items` | GameMaster | Most traded items today |
-| `/analytics top buyers` | GameMaster | Top buyers (coming soon) |
-| `/analytics top sellers` | GameMaster | Top sellers (coming soon) |
-| `/analytics history [days]` | GameMaster | Daily metrics history, 1–90 days (default 7) |
-| `/analytics snapshot` | Admin | Force an economy snapshot now |
-| `/analytics export` | Admin | Export analytics data |
-| `/analytics health` | GameMaster | Economy Health Score *(premium)* |
-| `/analytics fraud` / `fraud list` | GameMaster | Recent fraud alerts *(premium)* |
-| `/analytics fraud scan` | Admin | Run all fraud detectors now *(premium)* |
-| `/analytics report weekly` | GameMaster | Generate the weekly report now |
-| `/analytics license` | Admin | License verification status |
-| `/analytics fingerprint` | Admin | Server fingerprint used by license keys |
-| `/analytics dashboard` | Admin | Dashboard subsystem status |
-| `/analytics dashboard setup <password>` | Admin | Set dashboard/encryption password (PBKDF2-hashed) |
-| `/analytics dashboard unlock <password>` | Admin | Unlock encrypted publishing after restart |
-| `/analytics dashboard github <owner> <repo>` | Admin | Configure GitHub Pages publishing target |
-| `/analytics dashboard publish` | Admin | Publish an encrypted dashboard snapshot now |
-| `/inflation [day\|week\|month]` | GameMaster | Inflation report over 24h/7d/30d |
+All commands require GAMEMASTERS-level permission unless noted otherwise.
 
----
+| Command | What it does |
+|---------|--------------|
+| `/analytics` | Overall economy status |
+| `/analytics wealth` | Wealth distribution between players |
+| `/analytics inflation` | Current inflation rate |
+| `/analytics top items\|buyers\|sellers` | Most-traded items, best buyers/sellers |
+| `/analytics history [days]` | Historical summary (1–90 days, default 7) |
+| `/inflation [day\|week\|month]` | Inflation rate for a specific period |
+| `/analytics snapshot` *(admins)* | Take an instant economy snapshot |
+| `/analytics export` *(admins)* | Export collected data |
+| `/analytics dashboard setup <password>` | Enable the web dashboard with a password |
+| `/analytics dashboard unlock <password>` | Unlock the dashboard for this session |
+| `/analytics dashboard setupfile <file>` · `unlockfile <file>` | Same, but reads the password from a file (safer) |
+| `/analytics dashboard github <owner> <repo>` | Link a GitHub repository for dashboard publishing |
+| `/analytics dashboard publish` | Push the dashboard data to GitHub now |
+| `/analytics license` | Premium-feature license status |
+| `/analytics health` *(license)* | The 0–100 economy health score |
+| `/analytics fraud list\|scan` *(license; scan for admins)* | View fraud alerts / run a full scan |
+| `/analytics fingerprint` *(license)* | A player's financial behavior fingerprint |
+| `/analytics report weekly` *(license)* | Generate the weekly report |
 
-## Configuration
+## Installation
 
-Solidus Analytics generates configuration automatically on first run. Every integration is **disabled by default**.
+1. Install [Fabric Loader](https://fabricmc.net/use/) on your server (Minecraft 26.1.2).
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and the [Solidus Core](https://github.com/MOHD-Gs15/solidus-core) mod into `mods` — Analytics is an add-on to Core, not a replacement.
+3. Drop `solidus-analytics-2.1.5.jar` into `mods`.
+4. Start the server — data collection begins immediately with no configuration.
 
-**Location:** `config/solidus-analytics/analytics.properties`
+> Server-side only. Analytics reads the economy through Solidus's own storage connection, whether it runs SQLite or MySQL.
 
-**Example:**
+## Quick configuration
 
-```properties
-snapshot.interval.minutes=30
-polling.interval.seconds=30
-data.retention.days=90
-cleanup.interval.hours=24
-discord.enabled=false
-discord.webhook.url=
-discord.fraud.min_severity=HIGH
-```
+Files are created under `config/solidus-analytics/` on first start. The things you may want:
 
-**Dashboard:** `config/solidus-analytics/dashboard.properties`
+- **Web dashboard** — disabled by default (the secure choice). To use it, enable `webserver.enabled` in the config (default port `9090`, bound to `127.0.0.1`), then reach it through an SSH tunnel or a reverse proxy before exposing it to the internet.
+- **GitHub publishing** — create a fine-grained token limited to a single repository, then `/analytics dashboard github <owner> <repo>` and the data file publishes automatically.
+- **Premium & cloud features** — see [docs/LICENSE-SYSTEM.md](docs/LICENSE-SYSTEM.md) and [docs/cloud/PROTOCOL.md](docs/cloud/PROTOCOL.md).
 
-```properties
-webserver.enabled=false
-webserver.port=9090
-webserver.password_hash=
-github.enabled=false
-github.owner=
-github.repo=
-github.branch=main
-publish.interval.seconds=60
-```
+## For advanced users
 
-**Secrets** belong in environment variables — never in Git:
+**Pipeline.** The collectors (`LiveMetricsTracker`, `SnapshotScheduler`, `WealthDistributionProvider`, `InflationCalculator`) read the transaction ledger through `CoreLedgerAccess` — a bridge that routes through Core's own connection in MySQL mode (no duplicate connection pools) and falls back to direct read-only file access in SQLite mode. The live loop runs on a dedicated thread, isolated from the database save queue.
 
-| Variable | Purpose |
-| --- | --- |
-| `SOLIDUS_GITHUB_TOKEN` | GitHub token for dashboard publishing (a legacy in-file token is ignored with a warning) |
-| `SOLIDUS_DASHBOARD_PASSWORD` | Optional: auto-unlocks encrypted publishing on server restart |
+**Volume accounting.** An explicit accounting table prevents double counting: escrow-held bid amounts are not counted as volume, auctions are counted once at settlement, and receiving mirrors are excluded.
 
-Values are validated and clamped on load — invalid numbers fall back to defaults, the fraud severity must be `LOW`/`MEDIUM`/`HIGH`, and Discord is force-disabled unless the webhook URL is an HTTPS `discord.com`/`discordapp.com` webhook.
+**Security.** Passwords are stored with scrypt; sessions are bounded; login and WebSocket endpoints are rate-limited; data files carry `0600` permissions; and the full SA security-audit register is documented in the changelog. The optional `cloud-relay` service is a standalone Node.js app (single dependency: `ws`) that sits between your server and supervisors: device pairing, a strict args schema that rejects unknown input, SSRF-guarded webhook delivery, tenant-isolated alert rules, and a PWA for phone monitoring.
 
----
+**Testing.** The Java suite (19 test classes, 91 tests) runs per push against a real `mariadb:11` service container, and the cloud relay runs its own end-to-end Node suite (smoke + security + restart-durability). Build locally with JDK 25: `./gradlew build`; run the relay tests with `npm test` inside `cloud-relay/`.
 
-## Compatibility
+## Documentation
 
-| Component | Requirement | Notes |
-| --- | --- | --- |
-| Minecraft | 26.1.2 | Mojang Official Mappings |
-| Loader | Fabric 0.19.4+ | Server-side only |
-| Fabric API | 0.155.2+26.1.2 | Required |
-| Java | 25 | Required |
-| Solidus Core | 2.x (recommended) | Optional at boot; required for live data |
-| Client | Any (vanilla or modded) | Dashboard runs in a browser, not in-game |
-| Database | SQLite (bundled) | WAL journaling, read-only access to Core's files |
-| Side | Server only | Zero client-side dependencies |
+| Document | Contents |
+|----------|----------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Engine architecture, pipeline, volume accounting table, ledger read path |
+| [docs/LICENSE-SYSTEM.md](docs/LICENSE-SYSTEM.md) | Premium license system: activation, verification, time anchoring |
+| [docs/cloud/PROTOCOL.md](docs/cloud/PROTOCOL.md) | Cloud relay protocol: pairing, messages, error codes |
+| [cloud-relay/README.md](cloud-relay/README.md) | Running the cloud relay service and host configuration |
+| [VERSIONING.md](VERSIONING.md) | Version policy and 2.1.x family compatibility |
+| [SECURITY.md](SECURITY.md) | Security reporting policy |
+| [PROVENANCE.md](PROVENANCE.md) | Code origin and provenance |
 
----
+## The Solidus family
 
-## Architecture
+| Mod | What it adds | Repository |
+|-----|--------------|------------|
+| **Solidus Core** | The economy engine itself | [MOHD-Gs15/solidus-core](https://github.com/MOHD-Gs15/solidus-core) |
+| **Solidus Analytics** (this repo) | Monitoring, dashboards, fraud detection | [MOHD-Gs15/solidus-analytics](https://github.com/MOHD-Gs15/solidus-analytics) |
+| **Solidus Governance** | Taxes, limits, policies, audits, backups, recovery | [MOHD-Gs15/Solidus-Governance](https://github.com/MOHD-Gs15/Solidus-Governance) |
+| **Solidus Enforcer** | Bounties, hunter licenses, anti-exploit enforcement | [MOHD-Gs15/Solidus-Enforcer](https://github.com/MOHD-Gs15/Solidus-Enforcer) |
 
-```
-com.solidus.analytics/
-├── SolidusAnalyticsMod.java     — Entry point, lifecycle, tick scheduler
-├── AnalyticsConfig.java         — Validated properties with clamped values
-├── engine/
-│   ├── AnalyticsEngine.java     — Central coordinator and lifecycle owner
-│   ├── LiveMetricsTracker.java  — Id-cursor transaction polling, live counters
-│   ├── SnapshotScheduler.java   — HOURLY/DAILY wealth snapshots, Gini
-│   └── InflationCalculator.java — Money supply vs. goods value, cached rates
-├── storage/
-│   └── AnalyticsDatabase.java   — Own WAL-mode SQLite, single-thread worker
-├── dashboard/
-│   ├── DashboardManager.java    — Config, lifecycle, publish cadence
-│   ├── AnalyticsWebServer.java  — NanoHTTPD, localhost, Basic auth
-│   ├── DashboardDataBuilder.java— JSON contract for /api/data
-│   ├── DashboardEncryption.java — AES-256-GCM payload encryption
-│   └── GitHubDataPublisher.java — Contents API publishing
-├── premium/
-│   ├── EconomyHealthScore.java  — Weighted 0–100 composite score
-│   ├── FraudDetector.java       — Wealth/frequency/size detectors
-│   ├── WeeklyReportGenerator.java— ISO-week markdown reports
-│   └── DiscordWebhookNotifier.java— Allowlisted webhook delivery
-├── license/
-│   └── LicenseVerifier.java     — License key + SHA-256 server fingerprint
-├── integration/
-│   └── SolidusIntegration.java  — Reflection bridge to Solidus Core
-└── commands/                    — /analytics, /inflation
-```
+## License & credits
 
-### Key Design Decisions
-
-1. **Read-only observation** — Analytics opens Core's `economy.db` and `auctions.db` with `PRAGMA query_only = ON`. It can never corrupt or mutate economy state, even on a bug.
-
-2. **The cents convention** — Core stores money as decimal `S$` (`REAL`). Analytics converts to integer cents at every read boundary and divides by 100 only at display time, eliminating floating-point drift from stored metrics. Scale-invariant indicators (Gini, shares, ratios, inflation %) are unaffected either way.
-
-3. **Exact incremental polling** — the live tracker cursors on the autoincrement `transaction_log.id` instead of timestamps, so burst transactions sharing one millisecond are never skipped, and receiver-side mirror rows (`PAY_RECEIVE`, `AUCTION_SOLD`) are excluded from volume so each money movement is counted once.
-
-4. **Single-thread worker** — all analytics database work runs on one daemon worker thread; shutdown drains pending tasks before closing the connection, so persisted metrics are never torn.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture documentation — subsystem deep-dives, database schema, JSON contract, thread model, and security posture.
-
----
-
-## FAQ
-
-### Does this require Solidus Core?
-
-**No — but it is pointless without it.** Analytics boots and serves an empty dashboard even without Core installed. All live data comes from Core's databases; when Core is present, integration activates automatically through reflection.
-
-### Does this require client mods?
-
-**No.** Analytics is entirely server-side. The web dashboard renders in any standard browser; in-game output uses vanilla chat components.
-
-### Is the web dashboard safe to expose publicly?
-
-It is built for localhost. The server binds to `127.0.0.1`, requires Basic auth (PBKDF2-hashed password), refuses to start without a configured password, and sends hardened headers. If you need remote access, put it behind an HTTPS reverse proxy with your own access controls — do not port-forward the raw server.
-
-### What data does it collect?
-
-Aggregated economy metrics only: balances (in aggregate), transaction types/amounts, item trade counts, and auction listings. No chat, no IPs, no item NBT payloads. The dashboard JSON contains player names only inside fraud alert descriptions.
-
-### Which features need a license key?
-
-Health score, fraud detection, weekly reports, Discord notifications, and encrypted GitHub publishing. Snapshots, live metrics, inflation tracking, in-game commands, and the local dashboard are free and always available.
-
-### Where is my data stored?
-
-Everything lives in `config/solidus-analytics/`: `analytics.db` (WAL-mode SQLite), `analytics.properties`, `dashboard.properties`, `license.key` (you provide), and `reports/`. Passwords are stored only as PBKDF2 hashes; tokens stay in environment variables.
-
-### How does GitHub publishing work?
-
-Analytics encrypts the dashboard payload with AES-256-GCM (password-derived key, 210,000 PBKDF2 iterations) and pushes it to a `owner/repo` you configure, using a token from `SOLIDUS_GITHUB_TOKEN`. Consumers decrypt with the same password. Never publish private player data to a public repository without reviewing the data policy first.
-
-### How much does it affect server performance?
-
-Practically nothing on the tick thread: tick handlers do constant-time work, all SQLite I/O runs on the analytics worker, and Core's databases are polled read-only once per interval (default 30s). See the performance section in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
----
-
-## Download
-
-| Platform | Link |
-| --- | --- |
-| GitHub Releases | [Latest Release](https://github.com/MOHD-Gs15/solidus-analytics/releases) |
-| Modrinth | [MOHD_Gs on Modrinth](https://modrinth.com/user/MOHD_Gs) |
-
----
-
-## Contributing
-
-Contributions are welcome.
-
-* Report issues via [GitHub Issues](https://github.com/MOHD-Gs15/solidus-analytics/issues)
-* Suggest features or improvements
-* Submit pull requests
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details, the testing strategy, and contribution guidelines.
-
----
-
-## License
-
-This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details. Core analytics features are 100% free; premium features (health score, fraud detection, weekly reports, Discord, encrypted publishing) require a license key.
-
----
-
-## Keywords
-
-`minecraft analytics mod` · `minecraft economy dashboard` · `minecraft fabric mod` · `minecraft server economy` · `minecraft inflation tracking` · `minecraft fraud detection` · `minecraft gini coefficient` · `server-side minecraft mod` · `minecraft economy health score` · `minecraft web dashboard` · `solidus analytics` · `minecraft economy monitoring`
-
----
-
-Built by [MOHD-Gs15](https://github.com/MOHD-Gs15) · [Email](mailto:mohdmxmxm@gmail.com) · Discord: **mohd_gs** · Part of the [Solidus Economy Ecosystem](https://github.com/MOHD-Gs15)
+- **Mod by [MOHD-Gs](https://github.com/MOHD-Gs15)**
+- Licensed under the [MIT License](LICENSE) — free to use, modify, and ship with your server.
