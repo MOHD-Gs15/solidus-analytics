@@ -38,3 +38,7 @@ cloud-relay/data/
 tools/license/keys/
 *private_key*.b64
 issued/
+
+# Family contract jar (audit W-5): committed on purpose so companion builds
+# are self-contained. Exception to the blanket *.jar rule above.
+!libs/*.jar
