@@ -37,10 +37,10 @@ import java.util.List;
  * column layout; money columns are DECIMAL S$ in MySQL and REAL in SQLite,
  * converted to cents on read exactly like the file path does).</p>
  *
- * <p>The production seam is a {@link Proxy} over Core's public
- * {@code TransactionLog$SqlWork} interface, so tests can drive the exact
- * same SQL through a plain {@link Connection} provider without Core on the
- * classpath ({@link #forConnectionProvider(ConnectionProvider)}).</p>
+ * <p>The production seam is the solidus-api contract itself: {@link #create(SolidusApi)}
+ * wires the provider to {@code SolidusApi#withLedgerConnection(LedgerWork)} (2.3.2+),
+ * so tests can drive the exact same SQL through a plain {@link Connection} provider
+ * without Core on the classpath ({@link #forConnectionProvider(ConnectionProvider)}).</p>
  */
 public final class CoreLedgerAccess {
 
@@ -58,15 +58,15 @@ public final class CoreLedgerAccess {
     }
 
     /**
-     * SQL execution seam. Production wires this to Core's
-     * {@code TransactionLog.withConnection(SqlWork)}; tests hand a plain
+     * SQL execution seam. Production wires this to the solidus-api contract
+     * ({@code SolidusApi#withLedgerConnection}); tests hand a plain
      * connection provider (SQLite in-memory, real MariaDB, ...).
      */
     public interface ConnectionProvider {
         Object run(SqlWorkAdapter work) throws SQLException;
     }
 
-    /** Functional mirror of Core's SqlWork for the provider seam. */
+    /** Test-side twin of the contract's {@code LedgerWork} for the provider seam. */
     public interface SqlWorkAdapter {
         Object run(Connection conn) throws SQLException;
     }
