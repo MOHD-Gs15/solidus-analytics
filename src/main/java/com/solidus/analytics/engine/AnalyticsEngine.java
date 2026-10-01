@@ -72,10 +72,13 @@ public class AnalyticsEngine {
         // engine (2.1.4) so the premium/cloud collectors (FraudDetector,
         // EconomyCollector) ride the SAME bridge.
         CoreLedgerAccess engineLedgerAccess = null;
-        boolean mysqlMode = SolidusIntegration.getInstance() != null
-            && SolidusIntegration.getInstance().isCoreMysqlMode();
+        // solidus-api 2.3.2: the backend signal and the ledger seam are
+        // contract members (api.isMysqlMode() / api.withLedgerConnection) —
+        // no more reflective reach into Core's EconomyEngine/TransactionLog.
+        com.solidus.api.SolidusApi contract = SolidusIntegration.getApi();
+        boolean mysqlMode = contract != null && contract.isMysqlMode();
         if (mysqlMode) {
-            engineLedgerAccess = CoreLedgerAccess.create(SolidusIntegration.getInstance().getTransactionLog());
+            engineLedgerAccess = CoreLedgerAccess.create(contract);
             if (engineLedgerAccess != null) {
                 SolidusAnalyticsMod.LOGGER.info("Core is in MySQL network mode - Analytics reads the ledger through Core's own connection (backend-agnostic). Direct SQLite file readers are bypassed.");
             }

@@ -4,9 +4,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.solidus.analytics.SolidusAnalyticsMod;
 import com.solidus.analytics.integration.SolidusIntegration;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
+import com.solidus.api.SolidusTransactionHook;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -16,9 +14,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * CloudVetoHook - the agent's transaction veto hook (PROTOCOL.md &sect;6.3 path
  * "Hook").
  *
- * <p>Registered into Solidus Core through the SAME reflection-proxy pattern the
- * Governance module uses (SolidusTransactionHook is interface-only for us - we
- * never link against Core). The hook name is {@code "solidus-cloud-agent"}.</p>
+ * <p>Implements the <b>solidus-api</b> {@link SolidusTransactionHook}
+ * contract DIRECTLY since 2.3.2 (audit W-5 closure) — the old build
+ * registered a reflection {@code Proxy} with a hand-written
+ * {@code InvocationHandler} and even resolved {@code Decision.ALLOW} /
+ * {@code Decision.deny(...)} reflectively. One typo in any of those names
+ * and the hook silently failed open. The hook name is
+ * {@code "solidus-cloud-agent"}.</p>
  *
  * <p>State (all volatile/concurrent, consulted in-memory only - veto hooks must
  * be fast per the Core threading contract):</p>
@@ -36,7 +38,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * is inherited from Core's EconomyHooks: if our proxy throws, the transaction
  * proceeds - the agent can never wedge the economy by itself.</p>
  */
-public final class CloudVetoHook {
+public final class CloudVetoHook implements SolidusTransactionHook {
     public static final String HOOK_NAME = "solidus-cloud-agent";
     private static final String STATE_KEY = "veto_state";
 
@@ -53,117 +55,115 @@ public final class CloudVetoHook {
     private final ConcurrentHashMap<String, UUID> nameIndex = new ConcurrentHashMap<String, UUID>();
 
     private final CloudAgentStore store;
-    private Object registeredProxy;
+    private volatile boolean registered;
 
     public CloudVetoHook(CloudAgentStore store) {
         this.store = store;
         this.loadPersisted();
     }
 
+    // ---- SolidusTransactionHook (typed, compile-checked since 2.3.2) ----
+
+    @Override
+    public String name() {
+        return HOOK_NAME;
+    }
+
+    @Override
+    public SolidusTransactionHook.Decision allowTransfer(UUID senderUuid, String senderName,
+                                                           UUID receiverUuid, String receiverName,
+                                                           double amount) {
+        return this.decideTransfer(senderUuid, senderName);
+    }
+
+    @Override
+    public SolidusTransactionHook.Decision allowAuctionListing(UUID sellerUuid, String sellerName, double price) {
+        return this.decideMarket(true, sellerUuid);
+    }
+
+    @Override
+    public SolidusTransactionHook.Decision allowAuctionPurchase(UUID buyerUuid, String buyerName, double price) {
+        return this.decideMarket(true, buyerUuid);
+    }
+
+    @Override
+    public SolidusTransactionHook.Decision allowShopPurchase(UUID playerUuid, String playerName, double cost) {
+        return this.decideMarket(false, playerUuid);
+    }
+
+    @Override
+    public SolidusTransactionHook.Decision allowShopSell(UUID playerUuid, String playerName) {
+        return this.decideMarket(false, playerUuid);
+    }
+
     // ---- lifecycle ----------------------------------------------------
 
     /**
-     * Registers the reflection proxy into Core. Returns false when Core is
-     * absent (standalone mode) - every pause/freeze command will then answer
-     * E_CORE_MISSING.
+     * Registers the hook into Core through the typed contract. Returns false
+     * when Core is absent (standalone mode) - every pause/freeze command
+     * will then answer E_CORE_MISSING.
      */
     public boolean register() {
         if (!SolidusIntegration.isAvailable()) {
             SolidusAnalyticsMod.LOGGER.warn("[Cloud] Solidus Core not loaded - veto hook NOT registered. Pause/freeze commands disabled.");
             return false;
         }
-        if (this.registeredProxy != null) {
+        if (this.registered) {
             return true;
         }
         try {
-            Class<?> hookItf = Class.forName("com.solidus.api.SolidusTransactionHook");
-            InvocationHandler handler = new InvocationHandler(){
-                @Override
-                public Object invoke(Object proxy, Method method, Object[] args) {
-                    String name2 = method.getName();
-                    if ("name".equals(name2)) {
-                        return HOOK_NAME;
-                    }
-                    if ("hashCode".equals(name2)) {
-                        return System.identityHashCode(proxy);
-                    }
-                    if ("equals".equals(name2)) {
-                        return proxy == args[0];
-                    }
-                    if ("toString".equals(name2)) {
-                        return "solidus-cloud-agent-proxy";
-                    }
-                    switch (name2) {
-                        case "allowTransfer": {
-                            return CloudVetoHook.this.decideTransfer((UUID)args[0], (String)args[1], (UUID)args[2], (String)args[3]);
-                        }
-                        case "allowAuctionListing":
-                        case "allowAuctionPurchase": {
-                            UUID actor = (UUID)args[0];
-                            return CloudVetoHook.this.decideMarket(true, actor);
-                        }
-                        case "allowShopPurchase":
-                        case "allowShopSell": {
-                            UUID actor = (UUID)args[0];
-                            return CloudVetoHook.this.decideMarket(false, actor);
-                        }
-                    }
-                    return null;
-                }
-            };
-            Object proxy = Proxy.newProxyInstance(hookItf.getClassLoader(), new Class<?>[]{hookItf}, handler);
-            if (SolidusIntegration.getInstance().registerTransactionHook(proxy)) {
-                this.registeredProxy = proxy;
-                SolidusAnalyticsMod.LOGGER.info("[Cloud] Veto hook '{}' registered into Solidus Core.", (Object)HOOK_NAME);
+            if (SolidusIntegration.getInstance().registerTransactionHook(this)) {
+                this.registered = true;
+                SolidusAnalyticsMod.LOGGER.info("[Cloud] Veto hook '{}' registered into Solidus Core.", HOOK_NAME);
                 return true;
             }
             SolidusAnalyticsMod.LOGGER.warn("[Cloud] Core rejected hook registration (duplicate name?).");
             return false;
         }
         catch (Exception e) {
-            SolidusAnalyticsMod.LOGGER.error("[Cloud] Failed to register veto hook via reflection", (Throwable)e);
+            SolidusAnalyticsMod.LOGGER.error("[Cloud] Failed to register veto hook through the contract", e);
             return false;
         }
     }
 
     public void unregister() {
-        if (this.registeredProxy != null && SolidusIntegration.isAvailable()) {
-            SolidusIntegration.getInstance().unregisterTransactionHook(this.registeredProxy);
-            this.registeredProxy = null;
+        if (this.registered && SolidusIntegration.isAvailable()) {
+            SolidusIntegration.getInstance().unregisterTransactionHook(this);
+            this.registered = false;
         }
     }
 
     public boolean isHookActive() {
-        return this.registeredProxy != null;
+        return this.registered;
     }
 
     // ---- veto decisions (must be fast, in-memory only) ----------------
 
-    private Object decideTransfer(UUID senderUuid, String senderName, UUID receiverUuid, String receiverName) {
+    private SolidusTransactionHook.Decision decideTransfer(UUID senderUuid, String senderName) {
         PauseInfo pause = this.globalPause;
         if (pause != null) {
-            return denyDecision("Economy paused by operator: " + pause.reason());
+            return SolidusTransactionHook.Decision.deny("Economy paused by operator: " + pause.reason());
         }
         FreezeInfo f = this.lookup(senderUuid, senderName);
         if (f != null) {
-            return denyDecision("Your account is frozen: " + f.reason());
+            return SolidusTransactionHook.Decision.deny("Your account is frozen: " + f.reason());
         }
-        return allowDecision();
+        return SolidusTransactionHook.Decision.ALLOW;
     }
 
-    private Object decideMarket(boolean auctions, UUID actorUuid) {
+    private SolidusTransactionHook.Decision decideMarket(boolean auctions, UUID actorUuid) {
         PauseInfo pause = this.globalPause;
         if (pause != null) {
-            return denyDecision("Economy paused by operator: " + pause.reason());
+            return SolidusTransactionHook.Decision.deny("Economy paused by operator: " + pause.reason());
         }
         PauseInfo marketPause = auctions ? this.auctionsPaused : this.shopPaused;
         if (marketPause != null) {
-            return denyDecision((auctions ? "Auctions" : "Shop") + " paused by operator: " + marketPause.reason());
+            return SolidusTransactionHook.Decision.deny((auctions ? "Auctions" : "Shop") + " paused by operator: " + marketPause.reason());
         }
         if (this.frozen.containsKey(actorUuid)) {
-            return denyDecision("Your account is frozen: " + this.frozen.get(actorUuid).reason());
+            return SolidusTransactionHook.Decision.deny("Your account is frozen: " + this.frozen.get(actorUuid).reason());
         }
-        return allowDecision();
+        return SolidusTransactionHook.Decision.ALLOW;
     }
 
     private FreezeInfo lookup(UUID uuid, String name) {
@@ -173,35 +173,6 @@ public final class CloudVetoHook {
         }
         UUID byName = name != null ? this.nameIndex.get(name) : null;
         return byName != null ? this.frozen.get(byName) : null;
-    }
-
-    // reflective access to Core's Decision record
-    private static volatile Object cachedAllowDecision;
-
-    private static Object allowDecision() {
-        if (cachedAllowDecision != null) {
-            return cachedAllowDecision;
-        }
-        try {
-            Class<?> decision = Class.forName("com.solidus.api.SolidusTransactionHook$Decision");
-            cachedAllowDecision = decision.getField("ALLOW").get(null);
-            return cachedAllowDecision;
-        }
-        catch (Exception e) {
-            SolidusAnalyticsMod.LOGGER.error("[Cloud] Cannot resolve Decision.ALLOW", (Throwable)e);
-            return null;
-        }
-    }
-
-    private static Object denyDecision(String reason) {
-        try {
-            Class<?> decision = Class.forName("com.solidus.api.SolidusTransactionHook$Decision");
-            return decision.getMethod("deny", String.class).invoke(null, reason);
-        }
-        catch (Exception e) {
-            SolidusAnalyticsMod.LOGGER.error("[Cloud] Cannot build denial decision", (Throwable)e);
-            return null;
-        }
     }
 
     // ---- state mutations (command side, may be any thread) -------------

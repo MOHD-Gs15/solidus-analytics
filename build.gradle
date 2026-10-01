@@ -76,6 +76,18 @@ dependencies {
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
+    // solidus-api — the Minecraft-free contract jar Solidus Core ships
+    // (nested in the core mod jar). Compiling against the local copy keeps
+    // Analytics self-contained: every Core call is compile-checked instead
+    // of reflective (audit W-5 closure, 2.3.2 — replaces the cached
+    // Method handles over Core internals incl. EconomyEngine/
+    // SQLiteStorage/TransactionLog$SqlWork, the hand-built hook Proxy and
+    // the reflective Decision access). fabric.mod.json declares
+    // "depends": { "solidus": ">=2.3.2 <3.0.0" } so the loader — not a
+    // log line — rejects incompatible combinations.
+    compileOnly files("libs/solidus-api-2.3.2.jar")
+    testImplementation files("libs/solidus-api-2.3.2.jar")
+
     implementation "org.nanohttpd:nanohttpd:2.3.1"
     include "org.nanohttpd:nanohttpd:2.3.1"
     implementation "com.google.code.gson:gson:${project.gson_version}"

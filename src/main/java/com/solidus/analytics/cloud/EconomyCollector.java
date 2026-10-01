@@ -8,7 +8,8 @@ import com.solidus.analytics.engine.LiveMetricsTracker;
 import com.solidus.analytics.integration.SolidusIntegration;
 import com.solidus.analytics.storage.CoreLedgerAccess;
 import com.solidus.analytics.storage.DirectDb;
-import java.lang.reflect.Method;
+import com.solidus.api.BalanceEntry;
+import com.solidus.api.EconomyStats;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -83,35 +84,36 @@ public final class EconomyCollector {
 
     // ---- periodic readings ----------------------------------------------
 
-    /** econ.top - top 10 balances via Core API (reflection). */
+    /** econ.top - top 10 balances via the solidus-api contract (typed since 2.3.2). */
     public JsonObject econTop() {
         JsonObject d = new JsonObject();
         JsonArray entries = new JsonArray();
         if (SolidusIntegration.isAvailable()) {
             try {
-                CompletableFuture<List> future = (CompletableFuture<List>)(Object)SolidusIntegration.getInstance().getTopBalances(10);
+                CompletableFuture<List<BalanceEntry>> future =
+                    SolidusIntegration.getInstance().getTopBalances(10);
                 if (future != null) {
-                    for (Object entry : future.get(API_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    for (BalanceEntry entry : future.get(API_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                         if (entry == null) {
                             continue;
                         }
                         JsonObject e = new JsonObject();
-                        e.addProperty("n", str(entry, "playerName"));
-                        e.addProperty("uuid", str(entry, "uuid"));
-                        e.addProperty("balC", Math.round(dbl(entry, "balance") * 100.0));
+                        e.addProperty("n", entry.playerName());
+                        e.addProperty("uuid", String.valueOf(entry.uuid()));
+                        e.addProperty("balC", Math.round(entry.balance() * 100.0));
                         entries.add(e);
                     }
                 }
             }
             catch (Exception e) {
-                SolidusAnalyticsMod.LOGGER.debug("[Cloud] econ.top unavailable", (Throwable)e);
+                SolidusAnalyticsMod.LOGGER.debug("[Cloud] econ.top unavailable", e);
             }
         }
         d.add("entries", entries);
         return d;
     }
 
-    /** econ.supply + econ.distribution aggregates from Core's EconomyStats. */
+    /** econ.supply + econ.distribution aggregates from Core's EconomyStats (typed since 2.3.2). */
     public JsonObject econSupply() {
         JsonObject d = new JsonObject();
         d.addProperty("supplyC", -1L);
@@ -121,9 +123,9 @@ public final class EconomyCollector {
             return d;
         }
         try {
-            Object stats = SolidusIntegration.getInstance().getEconomyStats(API_TIMEOUT_SECONDS);
+            EconomyStats stats = SolidusIntegration.getInstance().getEconomyStats(API_TIMEOUT_SECONDS);
             if (stats != null) {
-                long supplyC = Math.round(dbl(stats, "totalSupply") * 100.0);
+                long supplyC = Math.round(stats.totalSupply() * 100.0);
                 long now = System.currentTimeMillis();
                 long delta = 0L;
                 if (this.lastSupplyC >= 0L && this.lastSupplyAt > 0L) {
@@ -134,7 +136,7 @@ public final class EconomyCollector {
                 this.lastSupplyAt = now;
                 d.addProperty("supplyC", supplyC);
                 d.addProperty("delta24hC", delta);
-                d.addProperty("players", (int)dbl(stats, "playerCount"));
+                d.addProperty("players", stats.playerCount());
             }
         }
         catch (Exception e) {
@@ -417,12 +419,10 @@ public final class EconomyCollector {
         }
         if (uuid != null && SolidusIntegration.isAvailable()) {
             try {
-                CompletableFuture<Double> future = (CompletableFuture<Double>)(Object)SolidusIntegration.getInstance().getBalanceOffline(java.util.UUID.fromString(uuid), name, API_TIMEOUT_SECONDS);
-                if (future != null) {
-                    Double live = future.get(API_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                    if (live != null) {
-                        d.addProperty("balC", Math.round(live.doubleValue() * 100.0));
-                    }
+                Double live = SolidusIntegration.getInstance().getBalanceOffline(
+                    java.util.UUID.fromString(uuid), name, API_TIMEOUT_SECONDS);
+                if (live != null) {
+                    d.addProperty("balC", Math.round(live.doubleValue() * 100.0));
                 }
             }
             catch (Exception e) {
@@ -559,30 +559,5 @@ public final class EconomyCollector {
         return names;
     }
 
-    // ---- reflective record accessors -------------------------------------
-
-    private static String str(Object record, String accessor) {
-        try {
-            Method m = record.getClass().getMethod(accessor);
-            Object v = m.invoke(record);
-            return v == null ? null : v.toString();
-        }
-        catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static double dbl(Object record, String accessor) {
-        try {
-            Method m = record.getClass().getMethod(accessor);
-            Object v = m.invoke(record);
-            if (v instanceof Number n) {
-                return n.doubleValue();
-            }
-            return 0.0;
-        }
-        catch (Exception e) {
-            return 0.0;
-        }
-    }
+    // ---- end of collector -------------------------------------------------
 }

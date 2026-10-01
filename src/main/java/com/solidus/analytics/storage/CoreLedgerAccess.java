@@ -1,9 +1,7 @@
 package com.solidus.analytics.storage;
 
 import com.solidus.analytics.SolidusAnalyticsMod;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
+import com.solidus.api.SolidusApi;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -23,12 +21,14 @@ import java.util.List;
  * {@code economy.db} file no longer exists (or is a frozen pre-cutover
  * copy), and the whole dashboard pipeline died with it.</p>
  *
- * <p>The fix runs THROUGH Core instead of around it: Core's
- * {@code TransactionLog.withConnection(SqlWork)} (public since core 2.2.4)
- * hands out a live JDBC connection to whatever backend Core is configured
- * for - the shared SQLite connection in single-server mode, a pooled MySQL
- * connection in network mode. One code path, both dialects, zero new
- * Analytics dependencies (Core's own driver and pool do the driving).</p>
+ * <p>The fix runs THROUGH Core instead of around it: since Core 2.3.2 the
+ * solidus-api contract exposes
+ * {@code SolidusApi.withLedgerConnection(LedgerWork)} — a live JDBC connection
+ * to whatever backend Core is configured for (the shared SQLite connection in
+ * single-server mode, a pooled MySQL connection in network mode). One code
+ * path, both dialects, zero reflection (audit W-5 closure: this class used
+ * to hand-build a {@code Proxy} over Core's internal
+ * {@code TransactionLog$SqlWork} interface).</p>
  *
  * <p>Accessibility contract: every query here is SELECT-only and bounded
  * (LIMIT or aggregate). Analytics must never write to Core's database
@@ -78,50 +78,20 @@ public final class CoreLedgerAccess {
     }
 
     /**
-     * Builds the production access path over a live Core TransactionLog
-     * instance (fetched reflectively by the caller). Returns null when the
-     * instance is missing - callers fall back to the direct-file path.
+     * Builds the production access path over the solidus-api contract
+     * (2.3.2+). Returns null when the contract is unavailable - callers
+     * fall back to the direct-file path.
      */
-    public static CoreLedgerAccess create(Object coreTransactionLog) {
-        if (coreTransactionLog == null) {
+    public static CoreLedgerAccess create(SolidusApi api) {
+        if (api == null) {
             return null;
         }
         try {
-            final Class<?> sqlWorkClass = Class.forName("com.solidus.economy.TransactionLog$SqlWork");
-            final Object log = coreTransactionLog;
-            final Method withConnection = log.getClass().getMethod("withConnection", sqlWorkClass);
-            ConnectionProvider provider = work -> {
-                InvocationHandler handler = (proxy, method, args) -> {
-                    if ("run".equals(method.getName())) {
-                        return work.run((Connection) args[0]);
-                    }
-                    throw new IllegalStateException("Unexpected SqlWork method: " + method);
-                };
-                Object sqlWorkProxy = Proxy.newProxyInstance(
-                    CoreLedgerAccess.class.getClassLoader(),
-                    new Class<?>[]{sqlWorkClass},
-                    handler);
-                try {
-                    return withConnection.invoke(log, sqlWorkProxy);
-                }
-                catch (java.lang.reflect.InvocationTargetException e) {
-                    Throwable cause = e.getCause();
-                    if (cause instanceof SQLException sqlException) {
-                        throw sqlException;
-                    }
-                    if (cause instanceof RuntimeException runtimeException) {
-                        throw runtimeException;
-                    }
-                    throw new SQLException("Core withConnection failed", cause);
-                }
-                catch (IllegalAccessException e) {
-                    throw new SQLException("Core TransactionLog.withConnection is not accessible", e);
-                }
-            };
+            ConnectionProvider provider = work -> api.withLedgerConnection(work::run);
             return new CoreLedgerAccess(provider);
         }
         catch (Exception e) {
-            SolidusAnalyticsMod.LOGGER.error("Failed to wire CoreLedgerAccess to the Core transaction log", (Throwable) e);
+            SolidusAnalyticsMod.LOGGER.error("Failed to wire CoreLedgerAccess through the solidus-api contract", e);
             return null;
         }
     }
@@ -130,7 +100,7 @@ public final class CoreLedgerAccess {
      * Verification seam: plain connection provider (SQLite file, in-memory
      * DB, real MariaDB...). Public since 2.1.4 so the premium/cloud collector
      * bridge tests can drive the exact production SQL without Core on the
-     * classpath. Production code must use {@link #create(Object)} instead.
+     * classpath. Production code must use {@link #create(SolidusApi)} instead.
      */
     public static CoreLedgerAccess forConnectionProvider(ConnectionProvider provider) {
         return new CoreLedgerAccess(provider);
