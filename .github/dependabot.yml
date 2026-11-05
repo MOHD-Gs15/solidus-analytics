@@ -4,6 +4,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # 2.4.0 lockstep freeze (VERSIONING.md): the dependencies listed below
+    # ship in the family jars or belong to the verified build toolchain.
+    # They change only in the next version cycle (2.4.1) with a full family
+    # re-drill. Remove these ignore lines when the 2.4.1 cycle opens.
+    ignore:
+      - dependency-name: "gradle-wrapper"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
